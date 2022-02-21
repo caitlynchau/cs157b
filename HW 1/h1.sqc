@@ -31,16 +31,32 @@
 #include <sqlutil.h>
 // #include "utilemb.h"
 
+
+// function declarations
 int TbSchemaNameGet(void);
 int TbColumnInfoGet(void);
+int GetOrgInfo(void);
+int GetStaffInfo(void);
 
 EXEC SQL BEGIN DECLARE SECTION;
   char tableName[128];
   char schemaName[128];
-  char columnName[20];
-  char dataType[14];
-  sqlint32 dataLength;
-  short dataScale;
+
+  sqlint32 deptNumber;
+  char deptName[20];
+  sqlint32 manager;
+  char division[20];
+  char location[20];
+
+  
+  sqlint32 id;
+  char name[20];
+  sqlint32 dept;
+  char job[20];
+  sqlint32 years;
+  float salary;
+  float comm;
+
   char dbAlias[15];
   char user[129];
   char pswd[15];
@@ -75,10 +91,15 @@ int main(int argc, char *argv[])
   
     printf("  Connected to '%s' database.\n", dbAlias);
 
-    strcpy(tableName, "STAFF");
-
+    // table 1: Org
+    strcpy(tableName, "ORG");
     rc = TbSchemaNameGet();
-    rc = TbColumnInfoGet();
+    rc = GetOrgInfo();
+
+    // table 2: Staff
+    strcpy(tableName, "STAFF");
+    rc = TbSchemaNameGet();
+    rc = GetStaffInfo();
 
     /* disconnect from the database */
     EXEC SQL CONNECT RESET;
@@ -89,18 +110,6 @@ int main(int argc, char *argv[])
 int TbSchemaNameGet(void)
 {
   struct sqlca sqlca;
-
-  printf("\n-----------------------------------------------------------");
-  printf("\nUSE THE SQL STATEMENT:\n");
-  printf("  SELECT INTO\n");
-  printf("TO GET A TABLE SCHEMA NAME.\n");
-
-  /* get the table schema name */  printf("\n  Execute the statement\n");
-  printf("    SELECT tabschema INTO :schemaName\n");
-  printf("      FROM syscat.tables\n");
-  printf("      WHERE tabname = :tableName\n");
-  printf("  for\n");
-  printf("    tableName = '%s'.\n", tableName);
 
   EXEC SQL SELECT tabschema INTO :schemaName
     FROM syscat.tables
@@ -115,33 +124,28 @@ int TbSchemaNameGet(void)
   return 0;
 } /* TbSchemaNameGet */
 
-int TbColumnInfoGet(void)
+
+int GetOrgInfo(void)
 {
   struct sqlca sqlca;
 
   printf("\n-----------------------------------------------------------");
-  printf("\nUSE THE SQL STATEMENTS:\n");
-  printf("  DECLARE CURSOR\n");
-  printf("  OPEN\n");
-  printf("  FETCH\n");
-  printf("  CLOSE\n");
-  printf("TO GET TABLE COLUMN INFO.\n");
 
   /* get info for table columns */
-  printf("\n  Get info for '%s.%s' table columns:\n",
+  printf("\n  Get info for '%s.%s':\n",
          schemaName, tableName);
-  printf("\n    column name          data type      data size\n");
-  printf("    -------------------- -------------- ----------\n");
+  printf("\nDEPTNUMB DEPTNAME       MANAGER DIVISION   LOCATION\n");
+  printf("-------- -------------- ------- ---------- -------------\n");
 
-  EXEC SQL DECLARE c1 CURSOR FOR
-    SELECT colname, typename, length, scale
-      FROM syscat.columns
-      WHERE tabschema = :schemaName AND tabname = :tableName;
+  EXEC SQL DECLARE orgCursor CURSOR FOR
+    SELECT deptnumb, deptname, manager, division, location
+      FROM org;
 
-  EXEC SQL OPEN c1;
+
+  EXEC SQL OPEN orgCursor;
   /* EMB_SQL_CHECK("Cursor -- Open"); */
 
-  EXEC SQL FETCH c1 INTO :columnName, :dataType, :dataLength, :dataScale;
+  EXEC SQL FETCH orgCursor INTO :deptNumber, :deptName, :manager, :division, :location;
   /* EMB_SQL_CHECK("Cursor -- Fetch"); */
 
   if (sqlca.sqlcode == 100)
@@ -151,22 +155,56 @@ int TbColumnInfoGet(void)
 
   while (sqlca.sqlcode != 100)
   {
-    printf("    %-20.20s %-14.14s %d", columnName, dataType, dataLength);
-    if (dataScale != 0)
-    {
-      printf(",%d\n", dataScale);
-    }
-    else
-    {
-      printf("\n");
-    }
+    printf("%8d %-14.14s %7d %-10.10s %-13.13s\n", deptNumber, deptName, manager, division, location);
 
-    EXEC SQL FETCH c1 INTO :columnName, :dataType, :dataLength, :dataScale;
+    EXEC SQL FETCH orgCursor INTO :deptNumber, :deptName, :manager, :division, :location;
     /* EMB_SQL_CHECK("Cursor -- Fetch"); */
   }
 
-  EXEC SQL CLOSE c1;
+  EXEC SQL CLOSE orgCursor;
   /* EMB_SQL_CHECK("Cursor -- Close"); */
   
   return 0;
-} /* TbColumnInfoGet */
+} /* GetOrgInfo */
+
+int GetStaffInfo(void)
+{
+  struct sqlca sqlca;
+
+  printf("\n-----------------------------------------------------------");
+
+  /* get info for table columns */
+  printf("\n  Get info for '%s.%s':\n",
+         schemaName, tableName);
+  printf("\nID     NAME      DEPT   JOB   YEARS  SALARY    COMM\n");
+  printf("------ --------- ------ ----- ------ --------- ---------\n");
+
+  EXEC SQL DECLARE staffCursor CURSOR FOR
+    SELECT id, name, dept, job, years, salary, comm
+      FROM staff;
+
+
+  EXEC SQL OPEN staffCursor;
+  /* EMB_SQL_CHECK("Cursor -- Open"); */
+
+  EXEC SQL FETCH staffCursor INTO :id, :name, :dept, :job, :years, :salary, :comm;
+  /* EMB_SQL_CHECK("Cursor -- Fetch"); */
+
+  if (sqlca.sqlcode == 100)
+  {
+    printf("\n  Data not found.\n");
+  }
+
+  while (sqlca.sqlcode != 100)
+  {
+    printf("%6d %-9.9s %6d %-5.5s %6d %9.2f %9.2f\n", id, name, dept, job, years, salary, comm);
+
+    EXEC SQL FETCH staffCursor INTO :id, :name, :dept, :job, :years, :salary, :comm;
+    /* EMB_SQL_CHECK("Cursor -- Fetch"); */
+  }
+
+  EXEC SQL CLOSE staffCursor;
+  /* EMB_SQL_CHECK("Cursor -- Close"); */
+  
+  return 0;
+} /* GetOrgInfo */
