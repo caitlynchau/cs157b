@@ -1,28 +1,9 @@
-/*
-**
-** SAMPLE: How to get information at the table level
-**
-** SQL STATEMENTS USED:
-**         SELECT
-**         DECLARE CURSOR
-**         OPEN
-**         FETCH
-**         CLOSE
-**
-** OUTPUT FILE: tbinfo.out (available in the online documentation)
-*****************************************************************************
-**
-** For more information on the sample programs, see the README file.
-**
-** For information on developing C applications, see the Application
-** Development Guide.
-**
-** For information on using SQL statements, see the SQL Reference.
-**
-** For the latest information on programming, building, and running DB2 
-** applications, visit the DB2 application development website: 
-**     http://www.software.ibm.com/data/db2/udb/ad
-****************************************************************************/
+/* 
+// Caitlyn Chau
+// CS 157B Sec 1
+// Homework 1
+// h1.sqc
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,14 +14,12 @@
 
 
 // function declarations
-int TbSchemaNameGet(void);
-int TbColumnInfoGet(void);
 int GetOrgInfo(void);
 int GetStaffInfo(void);
+int JoinTables(void);
 
 EXEC SQL BEGIN DECLARE SECTION;
   char tableName[128];
-  char schemaName[128];
 
   sqlint32 deptNumber;
   char deptName[20];
@@ -83,8 +62,6 @@ int main(int argc, char *argv[])
 //    strcpy(user, argv[2]);
 //    strcpy(pswd, argv[3]);
 
-    printf("\nTHIS SAMPLE SHOWS HOW TO GET INFORMATION AT THE TABLE LEVEL.\n");
-
     /* connect to the database */
     printf("\n  Connecting to '%s' database...\n", dbAlias);
     
@@ -96,15 +73,13 @@ int main(int argc, char *argv[])
 
     // table 1: Org
     strcpy(tableName, "ORG");
-    rc = TbSchemaNameGet();
     rc = GetOrgInfo();
 
     // table 2: Staff
     strcpy(tableName, "STAFF");
-    rc = TbSchemaNameGet();
     rc = GetStaffInfo();
 
-    strcpy(tableName, "STAFF");
+    // table 3: Join Staff and Org tables
     rc = JoinTables();
 
     // table 3: Join Org and Staff
@@ -116,33 +91,12 @@ int main(int argc, char *argv[])
     return 0;
 } /* end main */
 
-int TbSchemaNameGet(void)
-{
-  struct sqlca sqlca;
-
-  EXEC SQL SELECT tabschema INTO :schemaName
-    FROM syscat.tables
-    WHERE tabname = :tableName;
-/*  EMB_SQL_CHECK("Table schema name -- Get"); */
-
-  /* get rid of spaces from the end of schemaName */
-  strtok(schemaName, " ");
-
-  printf("\n  Table schema name is: %s\n", schemaName);
-
-  return 0;
-} /* TbSchemaNameGet */
-
-
 int GetOrgInfo(void)
 {
   struct sqlca sqlca;
 
   printf("\n-----------------------------------------------------------");
-
-  /* get info for table columns */
-  printf("\n  Get info for '%s.%s':\n",
-         schemaName, tableName);
+  printf("\n  Get info for '%s':\n", tableName);
   printf("\nDEPTNUMB DEPTNAME       MANAGER DIVISION   LOCATION\n");
   printf("-------- -------------- ------- ---------- -------------\n");
 
@@ -181,10 +135,7 @@ int GetStaffInfo(void)
   struct sqlca sqlca;
 
   printf("\n-----------------------------------------------------------");
-
-  /* get info for table columns */
-  printf("\n  Get info for '%s.%s':\n",
-         schemaName, tableName);
+  printf("\n  Get info for '%s':\n", tableName);
   printf("\nID     NAME      DEPT   JOB   YEARS  SALARY    COMM\n");
   printf("------ --------- ------ ----- ------ --------- ---------\n");
 
