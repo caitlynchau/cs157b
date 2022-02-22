@@ -57,6 +57,9 @@ EXEC SQL BEGIN DECLARE SECTION;
   float salary;
   float comm;
 
+  short commNullInd;
+  short yearNullInd;
+
   char dbAlias[15];
   char user[129];
   char pswd[15];
@@ -100,6 +103,12 @@ int main(int argc, char *argv[])
     strcpy(tableName, "STAFF");
     rc = TbSchemaNameGet();
     rc = GetStaffInfo();
+
+    strcpy(tableName, "STAFF");
+    rc = JoinTables();
+
+    // table 3: Join Org and Staff
+    
 
     /* disconnect from the database */
     EXEC SQL CONNECT RESET;
@@ -187,7 +196,7 @@ int GetStaffInfo(void)
   EXEC SQL OPEN staffCursor;
   /* EMB_SQL_CHECK("Cursor -- Open"); */
 
-  EXEC SQL FETCH staffCursor INTO :id, :name, :dept, :job, :years, :salary, :comm;
+  EXEC SQL FETCH staffCursor INTO :id, :name, :dept, :job, :years:yearNullInd, :salary, :comm:commNullInd;
   /* EMB_SQL_CHECK("Cursor -- Fetch"); */
 
   if (sqlca.sqlcode == 100)
@@ -197,10 +206,22 @@ int GetStaffInfo(void)
 
   while (sqlca.sqlcode != 100)
   {
-    printf("%6d %-9.9s %6d %-5.5s %6d %9.2f %9.2f\n", id, name, dept, job, years, salary, comm);
+    printf("%6d %-9.9s %6d %-5.5s ", id, name, dept, job);
+    if (yearNullInd == -1) {
+      printf("     - ") ;
+    } else {
+      printf("%6d ", years);
+    }
+    printf("%9.2f ", salary);
+    if (commNullInd == -1) {
+      printf("        - ");
+    } else {
+      printf("%9.2f", comm);
+    }
+    printf("\n");
 
-    EXEC SQL FETCH staffCursor INTO :id, :name, :dept, :job, :years, :salary, :comm;
-    /* EMB_SQL_CHECK("Cursor -- Fetch"); */
+    EXEC SQL FETCH staffCursor INTO :id, :name, :dept, :job, :years:yearNullInd, :salary, :comm:commNullInd;
+    /* EMB_SQL_CHECK("Cursor -- Fetch"); */ 
   }
 
   EXEC SQL CLOSE staffCursor;
@@ -208,3 +229,57 @@ int GetStaffInfo(void)
   
   return 0;
 } /* GetOrgInfo */
+
+// Table 3
+int JoinTables(void)
+{
+  struct sqlca sqlca;
+
+  printf("\n-----------------------------------------------------------");
+  printf("\nID     NAME      DEPT   JOB   YEARS  SALARY    COMM      DEPTNAME       MANAGER DIVISION   LOCATION\n");
+  printf("------ --------- ------ ----- ------ --------- --------- -------------- ------- ---------- -------------\n");
+
+  EXEC SQL DECLARE c3 CURSOR FOR
+    SELECT id, name, dept, job, years, salary, comm, deptname, manager, division, location
+      FROM staff s, org o
+      WHERE s.dept = o.deptnumb
+      ORDER BY dept, salary desc;
+
+
+  EXEC SQL OPEN c3;
+  /* EMB_SQL_CHECK("Cursor -- Open"); */
+
+  EXEC SQL FETCH c3 INTO :id, :name, :dept, :job, :years:yearNullInd, :salary, :comm:commNullInd, :deptName, :manager, :division, :location;
+  /* EMB_SQL_CHECK("Cursor -- Fetch"); */
+
+  if (sqlca.sqlcode == 100)
+  {
+    printf("\n  Data not found.\n");
+  }
+
+  while (sqlca.sqlcode != 100)
+  {
+    printf("%6d %-9.9s %6d %-5.5s ", id, name, dept, job);
+    if (yearNullInd == -1) {
+      printf("     - ") ;
+    } else {
+      printf("%6d ", years);
+    }
+    printf("%9.2f ", salary);
+    if (commNullInd == -1) {
+      printf("        - ");
+    } else {
+      printf("%9.2f ", comm);
+    }
+    printf("%-14.14s %7d %-10.10s %-13.13s\n", deptName, manager, division, location);
+
+
+    EXEC SQL FETCH c3 INTO :id, :name, :dept, :job, :years:yearNullInd, :salary, :comm:commNullInd, :deptName, :manager, :division, :location;
+    /* EMB_SQL_CHECK("Cursor -- Fetch"); */ 
+  }
+
+  EXEC SQL CLOSE staffCursor;
+  /* EMB_SQL_CHECK("Cursor -- Close"); */
+  
+  return 0;
+} /* JoinTables */
