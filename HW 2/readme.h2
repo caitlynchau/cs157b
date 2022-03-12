@@ -1,0 +1,139 @@
+CS 157B Section 1
+Caitlyn Chau
+ID #012662273
+
+Run `db2 -td"^" -f h2.sql` to create tables and triggers
+
+sample output:
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "RI 
+Violation - Customer ID does not exist".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Primary 
+Key Violated: Duplicate Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Name".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Name".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Gender".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Gender".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Invalid 
+Gender".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Invalid 
+Gender".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Primary 
+Key Violated: Duplicate Account Number".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Account Number".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Account Number".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "RI 
+Violation - Customer ID does not exist".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Type".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Type".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Null 
+Balance".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Invalid 
+Account Type".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Invalid 
+Account Type".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "RI 
+Violation - Cannot delete: At least one account associated with thi".  
+SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Primary 
+Key Violated: Duplicate Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Primary 
+Key Violated: Duplicate Customer ID".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "Total sum 
+of all balances cannot be negative".  SQLSTATE=88888
+
+DB21034E  The command was processed as an SQL statement because it was not a 
+valid Command Line Processor command.  During SQL processing it returned:
+SQL0438N  Application raised error or warning with diagnostic text: "RI 
+Violation - Cannot update: At least one account associated with thi".  
+SQLSTATE=88888
