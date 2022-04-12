@@ -56,6 +56,17 @@ typedef struct t_list
 	struct t_list *next;
 } token_list;
 
+/**
+ * Table File Header Struct */
+typedef struct table_file_header_def {
+	int file_size;
+	int record_size;
+	int num_records;
+	int record_offset;
+	int file_header_flag;
+	tpd_entry *tpd_ptr;
+} table_file_header;
+
 /* This enum defines the different classes of tokens for 
 	 semantic processing. */
 typedef enum t_class
@@ -176,6 +187,8 @@ int sem_create_table(token_list *t_list);
 int sem_drop_table(token_list *t_list);
 int sem_list_tables();
 int sem_list_schema(token_list *t_list);
+int sem_insert_into(token_list *t_list);
+int roundUp(int num);
 
 /*
 	Keep a global list of tpd - in real life, this will be stored

@@ -331,6 +331,13 @@ int do_semantic(token_list *tok_list)
 		cur_cmd = LIST_SCHEMA;
 		cur = cur->next->next;
 	}
+  else if ((cur->tok_value == K_INSERT) &&
+					((cur->next != NULL) && (cur->next->tok_value == K_INTO)))
+	{
+		printf("INSERT INTO statement\n");
+		cur_cmd = INSERT;
+		cur = cur->next->next;
+	}
 	else
   {
 		printf("Invalid statement\n");
@@ -353,6 +360,12 @@ int do_semantic(token_list *tok_list)
 			case LIST_SCHEMA:
 						rc = sem_list_schema(cur);
 						break;
+			case INSERT:
+						rc = sem_insert_into(cur);
+						break;
+			// case SELECT_CMD:
+			// 			rc = sem_select_cmd(cur);
+			// 			break;
 			default:
 					; /* no action */
 		}
@@ -370,6 +383,7 @@ int sem_create_table(token_list *t_list)
 	bool column_done = false;
 	int cur_id = 0;
 	cd_entry	col_entry[MAX_NUM_COL];
+  int record_size = 0;
 
 
 	memset(&tab_entry, '\0', sizeof(tpd_entry));
@@ -489,6 +503,7 @@ int sem_create_table(token_list *t_list)
 												{
  													column_done = true;
 												}
+                        record_size += sizeof(int) + 1;
 												cur = cur->next;
 											}
 										}
@@ -552,7 +567,7 @@ int sem_create_table(token_list *t_list)
 													if (!rc)
 													{
 														/* I must have either a comma or right paren */
-														if ((cur->tok_value != S_RIGHT_PAREN) &&															  (cur->tok_value != S_COMMA))
+														if ((cur->tok_value != S_RIGHT_PAREN) && (cur->tok_value != S_COMMA))
 														{
 															rc = INVALID_COLUMN_DEFINITION;
 															cur->tok_value = INVALID;
@@ -563,6 +578,7 @@ int sem_create_table(token_list *t_list)
 															{
 																column_done = true;
 															}
+                              record_size += col_entry[cur_id].col_len + 1;
 															cur = cur->next;
 														}
 													}
@@ -593,8 +609,7 @@ int sem_create_table(token_list *t_list)
 				{
 					/* Now finished building tpd and add it to the tpd list */
 					tab_entry.num_columns = cur_id;
-					tab_entry.tpd_size = sizeof(tpd_entry) + 
-															 sizeof(cd_entry) *	tab_entry.num_columns;
+					tab_entry.tpd_size = sizeof(tpd_entry) + sizeof(cd_entry) *	tab_entry.num_columns;
 				  tab_entry.cd_offset = sizeof(tpd_entry);
 					new_entry = (tpd_entry*)calloc(1, tab_entry.tpd_size);
 
@@ -604,23 +619,57 @@ int sem_create_table(token_list *t_list)
 					}
 					else
 					{
-						memcpy((void*)new_entry,
-							     (void*)&tab_entry,
-									 sizeof(tpd_entry));
-		
-						memcpy((void*)((char*)new_entry + sizeof(tpd_entry)),
-									 (void*)col_entry,
-									 sizeof(cd_entry) * tab_entry.num_columns);
+            memcpy((void*)new_entry, (void*)&tab_entry, sizeof(tpd_entry));
+            
+            memcpy((void*)((char*)new_entry + sizeof(tpd_entry)),
+              (void*)col_entry, sizeof(cd_entry) * tab_entry.num_columns);
+            
+            table_file_header *tableHeaderPtr;
+            tableHeaderPtr = (table_file_header*)calloc(1, sizeof(table_file_header));
+            
+            printf("sizeof table file header: %lu\n\n", sizeof(table_file_header));
+
+            tableHeaderPtr->file_size = sizeof(table_file_header);
+            tableHeaderPtr->record_size = roundUp(record_size);
+            tableHeaderPtr->num_records = 0;
+            tableHeaderPtr->record_offset = sizeof(table_file_header);
+            tableHeaderPtr->file_header_flag = 0;
+
+            int tableNameLength = strlen(tab_entry.table_name);
+
+            char tableFileName [tableNameLength + strlen(".tab") + 1];
+            sprintf(tableFileName, "%s.tab", tab_entry.table_name);
+
+            FILE *fp = NULL;
+            if ((fp = fopen(tableFileName, "wbc")) == NULL) {
+              rc = FILE_OPEN_ERROR;
+            } else {
+              fwrite(&(tableHeaderPtr->file_size), sizeof(int), 1, fp);
+              fwrite(&(tableHeaderPtr->record_size), sizeof(int), 1, fp);
+              fwrite(&(tableHeaderPtr->num_records), sizeof(int), 1, fp);
+              fwrite(&(tableHeaderPtr->record_offset), sizeof(int), 1, fp);
+              fwrite(&(tableHeaderPtr->file_header_flag), sizeof(int), 1, fp);
+              fclose(fp);
+            }            
 	
 						rc = add_tpd_to_list(new_entry);
 
 						free(new_entry);
+            
 					}
 				}
 			}
 		}
 	}
   return rc;
+}
+
+int roundUp(int num) {
+  int mod = num % 4;
+  if (mod == 0) {
+    return num;
+  }
+  return num + 4 - mod;
 }
 
 int sem_drop_table(token_list *t_list)
@@ -655,6 +704,24 @@ int sem_drop_table(token_list *t_list)
 			else
 			{
 				/* Found a valid tpd, drop it from tpd list */
+        printf("deleting table: %s\n", tab_entry->table_name);
+        // char *extension = ".tab";
+        // char *dropTableName = (char*)malloc(strlen(tab_entry->table_name) + strlen(extension) + 1);
+        // strcat(dropTableName, tab_entry->table_name);
+        // strcat(dropTableName, extension);
+
+        int tableNameLength = strlen(tab_entry->table_name);
+        char dropTableName [tableNameLength + strlen(".tab") + 1];
+        sprintf(dropTableName, "%s.tab", tab_entry->table_name);
+        printf("File name to be deleted: %s\n", dropTableName);
+
+        // remove file with given file name
+        if (remove(dropTableName) == 0) {
+          printf("Successfully deleted file.\n");
+        } else {
+          printf("Unable to delete file.\n");
+        }
+
 				rc = drop_tpd_from_list(cur->tok_string);
 			}
 		}
@@ -832,6 +899,18 @@ int sem_list_schema(token_list *t_list)
 			} // no semantic errors
 		} // Invalid table name
 	} // Invalid statement
+
+  return rc;
+}
+
+int sem_insert_into(token_list *t_list) 
+{
+  int rc = 0;
+  token_list *cur;
+  tpd_entry *tab_entry = NULL;
+
+  bool values_done = false;
+  
 
   return rc;
 }
