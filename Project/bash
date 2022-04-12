@@ -1,0 +1,4 @@
+#!/bin/bash
+rm dbfile.bin
+rm *.tab
+gcc -o db db.cpp
