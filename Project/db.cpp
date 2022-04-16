@@ -14,9 +14,14 @@
 #define strcasecmp _stricmp
 #endif
 
+/* global variable declaration */
+int total_rows;
+
 int main(int argc, char** argv)
 {
 	int rc = 0;
+  total_rows = 0;
+
 	token_list *tok_list=NULL, *tok_ptr=NULL, *tmp_tok_ptr=NULL;
 
 	if ((argc != 2) || (strlen(argv[1]) == 0))
@@ -905,16 +910,9 @@ int sem_insert_into(token_list *t_list)
 
 	int col_index = 0;
   int record_size = 0;
-
-  table_file_header *old_header = (table_file_header*)calloc(1, sizeof(table_file_header));
-  table_file_header *new_header = NULL;
-  
     
   bool values_done = false;
   int i = 0;
-  char *cur_record = NULL;
-  char *user_str = NULL;
-  char *record_buffer = NULL;
 
   cur = t_list;
 
@@ -931,175 +929,230 @@ int sem_insert_into(token_list *t_list)
     if ((tab_entry = get_tpd_from_list(cur->tok_string)) == NULL) {
       rc = TABLE_NOT_EXIST;
       cur->tok_value = INVALID;
+      printf("Table %s not found\n", cur->tok_string);
     } else { // Found a valid tpd
-      cur = cur->next;
-
       // Open table file for reading
       char filename[MAX_IDENT_LEN + 4] = {0};
       strcpy(filename, strcat(tab_entry->table_name, ".tab"));
-      if ((rp = fopen(filename, "rbc")) == NULL) {
+      if ((fp = fopen(filename, "abc")) == NULL) {
         printf("Error while opening %s file\n", filename);
         rc = FILE_OPEN_ERROR;
         cur->tok_value = INVALID;
-      } 
-
-      // Open old header
-      fread(old_header, sizeof(table_file_header), 1, rp);
-      old_header->tpd_ptr = get_tpd_from_list(tab_entry->table_name);
-
-      // Create new table file header and copy old header
-      new_header = (table_file_header*)calloc(1, sizeof(old_header) + old_header->record_size);
-      memcpy((void*)new_header, (void*)old_header, sizeof(old_header) + old_header->record_size);
-      free(old_header);
-
-      record_buffer = (char*)calloc(new_header->record_size, 1);
-
-      if (cur->tok_value != K_VALUES) {
-        rc = INVALID_TYPE_NAME;
-        cur->tok_value = INVALID;
-      } 
-      else {
+      } else {
         cur = cur->next;
-        // if current token is not (
-        if (cur->tok_value != S_LEFT_PAREN) {
+        // Open old header
+        // fread(old_header, sizeof(table_file_header), 1, fp);
+        // old_header->tpd_ptr = get_tpd_from_list(tab_entry->table_name);
+
+        // // Create new table file header and copy old header
+        // new_header = (table_file_header*)calloc(1, sizeof(old_header) + old_header->record_size);
+        // memcpy((void*)new_header, (void*)old_header, sizeof(old_header) + old_header->record_size);
+        // free(old_header);
+
+        // record_buffer = (char*)calloc(new_header->record_size, 1);
+
+        if (cur->tok_value != K_VALUES) {
           rc = INVALID_TYPE_NAME;
           cur->tok_value = INVALID;
-        } else {
+        } 
+        else {
           cur = cur->next;
-          // Now we are pointing at the first value to be inserted
-          col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
-          do {
-            // if current token is not an integer or string literal
-            if (cur->tok_value != INT_LITERAL 
-                && cur->tok_value != STRING_LITERAL
-                && cur->tok_value != K_NULL) {
-              rc = INVALID_TYPE_NAME;
-              cur->tok_value = INVALID;
-            } else {
-              if (col_entry->col_type == T_INT) { // INTEGER
-                
-                if (col_entry->not_null) { // not null flag has been set
-                  if (cur->tok_value == INT_LITERAL) {
-                    sprintf(record_buffer + strlen(record_buffer), "%d", 4);
-                    sprintf(record_buffer + strlen(record_buffer), "%d", atoi(cur->tok_string));
-                    record_size += sizeof(int) + 1;
-                    cur = cur->next;
-                  } else if (cur->tok_value == K_NULL || cur->tok_value == STRING_LITERAL) {
-                    // error
-                    rc = INVALID_TYPE;
-                    cur->tok_value = INVALID;
-                  }
-                  
-                } else { // not null flag has not been set
-                  if (cur->tok_value == INT_LITERAL) {
-                    sprintf(record_buffer + strlen(record_buffer), "%d", 4);
-                    sprintf(record_buffer + strlen(record_buffer), "%d", atoi(cur->tok_string));
-                    record_size += sizeof(int) + 1;
-                    cur = cur->next;
-                  } else if (cur->tok_value == K_NULL) {
-                    sprintf(record_buffer + strlen(record_buffer), "%d%d", 0, 0);
-                    cur = cur->next;
-                  } else if (cur->tok_value == STRING_LITERAL) {
-                    // error
-                    rc = INVALID_TYPE;
-                    cur->tok_value = INVALID;
-                  }
-                }
-              
-              } else { // COLUMN TYPE IS T_CHAR
-                user_str = (char*)calloc(col_entry->col_len, 1);
-
-                if (col_entry->not_null) { // null flag has been set
-                  if (cur->tok_value == STRING_LITERAL) {
-                    // save string value
-                    sprintf(user_str, "%s", cur->tok_string);
-                    sprintf(record_buffer + strlen(record_buffer), "%d", strlen(cur->tok_string));
-                    sprintf(record_buffer + strlen(record_buffer), "%s", user_str);
-                    record_size += (strlen(cur->tok_string) + 1);
-                    cur = cur->next;
-                  } else if (cur->tok_value == K_NULL || cur->tok_value == INT_LITERAL) {
-                    // error
-                    rc = INVALID_TYPE;
-                    cur->tok_value = INVALID;
-                  }
-                  
-                } else { // null flag has not been set
-                  if (cur->tok_value == STRING_LITERAL) {
-                    // save string literal
-                    sprintf(user_str, "%s", cur->tok_string);
-                    sprintf(record_buffer + strlen(record_buffer), "%d", strlen(cur->tok_string));
-                    sprintf(record_buffer + strlen(record_buffer), "%s", user_str);
-                    record_size += (strlen(cur->tok_string) + 1);
-                    cur = cur->next;
-                  } else if (cur->tok_value == K_NULL) {
-                    sprintf(record_buffer + strlen(record_buffer), "%d%d", 0, 0);
-                    cur = cur->next;
-                  } else if (cur->tok_value == INT_LITERAL) {
-                    // error
-                    rc = INVALID_TYPE;
-                    cur->tok_value = INVALID;
-                  }
-                }
-                free(user_str);
+          // if current token is not (
+          if (cur->tok_value != S_LEFT_PAREN) {
+            rc = INVALID_TYPE_NAME;
+            cur->tok_value = INVALID;
+          } else {
+            cur = cur->next;
+            // Now we are pointing at the first value to be inserted
+            col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+            for (i = 0; i < tab_entry->num_columns; i++, col_entry++) 
+            {
+              if (cur->tok_value == EOC) {
+                rc = MAX_COLUMN_EXCEEDED;
+                cur->tok_value = INVALID;
+                break;
               }
-              if (!rc) { 
-                if (cur->tok_value == S_RIGHT_PAREN) {
-                  if (cur->next->tok_value == EOC) {
-                    values_done = true;
-                    // increment header file num_records
-                  } else {
-                    rc = INVALID_TYPE;
-                    cur->next->tok_value = INVALID;
+
+              if (cur->tok_value == S_COMMA) {
+                if (cur->next->tok_value != INT_LITERAL 
+                    && cur->next->tok_value != STRING_LITERAL
+                    && cur->next->tok_value != K_NULL) 
+                {
+                    rc = INVALID_TYPE_NAME;
+                    cur->tok_value = INVALID;
+                    break;
+                } else {
+                  cur = cur->next;
+                  i--;
+                  col_entry--;
+                }
+              }
+
+              // Invalid type. Expected int, string, or null
+              else if (cur->tok_value != INT_LITERAL 
+                    && cur->tok_value != STRING_LITERAL
+                    && cur->tok_value != K_NULL) 
+              {
+                rc = INVALID_TYPE;
+                cur->tok_value = INVALID;
+                printf("Error: Expected int, string, or null\n");
+                break;
+              }
+
+              // Expectd string, got int
+              else if (cur->tok_value == INT_LITERAL && col_entry->col_type == T_CHAR) {
+                rc = INVALID_TYPE;
+                cur->tok_value = INVALID;
+                printf("Error: Expected string, got int\n");
+                break;
+              }
+
+              // Expected int, got string
+              else if (cur->tok_value == STRING_LITERAL && col_entry->col_type == T_INT) {
+                rc = INVALID_TYPE;
+                cur->tok_value = INVALID;
+                printf("Error: Expected int, got string\n");
+                break; 
+              }
+
+              // Null constraint failed
+              else if (cur->tok_value == K_NULL && col_entry->col_type) {
+                rc = NULL_CONSTRAINT;
+                cur->tok_value = INVALID;
+                printf("Error: Null constraint violated\n");
+                break; 
+              }
+
+              else {
+                // Check string length
+                if (cur->tok_value == STRING_LITERAL && col_entry->col_type == T_CHAR 
+                    && strlen(cur->tok_string) > col_entry->col_len) {
+                    rc = INVALID_COLUMN_LENGTH;
+                    cur->tok_value = INVALID;
+                    printf("Error: String exceeds varchar limit\n");
+                    break; 
+                } else {
+                  cur = cur->next;
+                }
+              }
+            } // end for loop. finished checking int/char values
+            
+            // closing parenthesis, EOC
+            if (!rc && cur->tok_value != S_RIGHT_PAREN) {
+              if (cur->tok_value == EOC) {
+                printf("Missing closing paren\n");
+              } else {
+                printf("Too many arguments\n");
+              }
+              rc = INVALID_STATEMENT;
+		          cur->tok_value = INVALID;
+            }
+
+            if (!rc && cur->next->tok_value != EOC) {
+              printf("Unexpected characters after closing paren\n");
+              rc = INVALID_STATEMENT;
+		          cur->tok_value = INVALID;
+            }
+
+            if (total_rows > MAX_ROWS) {
+              printf("Cannot complete insert. Maximum rows in memory reached\n");
+              return rc;
+            }
+
+            if (!rc) { // Finished validating values
+              // Reset cur to first value
+              cur = t_list->next->next->next; // skip '<table_name> values ('
+              int num_columns = tab_entry->num_columns;
+              cd_entry* col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+
+              for (int i = 0; i < num_columns; i++, col_entry++) {
+                if (cur->tok_value == INT_LITERAL) {
+                  int int_size = sizeof(int);
+                  int int_value = atoi(cur->tok_string);
+                  fwrite(&int_size, 1, 1, fp);
+                  fwrite(&int_value, sizeof(int), 1, fp);
+                  cur = cur->next;
+                }
+                
+                else if (cur->tok_value == STRING_LITERAL) {
+                  int str_length = strlen(cur->tok_string);
+                  int max_length = col_entry->col_len;
+                  fwrite(&str_length, 1, 1, fp);
+                  fwrite(cur->tok_string, str_length, 1, fp);
+
+                  int padding = max_length - str_length;
+                  int zero = 0;
+                  if (padding > 0) {
+                    fwrite(&zero, padding, 1, fp);
+                  }
+                  cur = cur->next;
+                }
+
+                else if (cur->tok_value == K_NULL) {
+                  char null = '\0';
+                  int char_size = sizeof(char);
+                  fwrite(&char_size, 1, 1, fp);
+                  fwrite(&null, 1, 1, fp);
+                  cur = cur->next;
+                }
+                else { // comma
+                  col_entry--;
+                  i--;
+                  cur = cur->next;
+                }
+              }
+
+              total_rows++;
+              fflush(fp);
+              fclose(fp);
+
+              // Update table header: file size and num records
+              if ((rp = fopen(filename, "r+b")) == NULL) {
+                printf("Error while opening %s file\n", filename);
+                rc = FILE_OPEN_ERROR;
+                cur->tok_value = INVALID;
+              } else {
+                int num_records, file_size;
+
+                // Read record size
+                if ((fseek(rp, 4, SEEK_SET)) == 0) {
+                  fread(&record_size, sizeof(int), 1, rp);
+                }
+                
+                // Update number of records
+                if((fseek(rp, 8, SEEK_SET)) == 0)
+                {
+                  fread(&num_records, sizeof(int), 1, rp);
+                  num_records += 1;
+                  
+                  if((fseek(rp, 8, SEEK_SET)) == 0)
+                  {
+                    fwrite(&num_records, 1, 1, rp);
                   }
                 }
-                else if (cur->tok_value == S_COMMA) {
-                  col_entry++;
-                  cur = cur->next;
-                } else {
-                  rc = INVALID_TYPE;
-                  cur->tok_value = INVALID;
+
+                // Update file size
+                if((fseek(rp, 0, SEEK_SET)) == 0)
+                {
+                  fread(&file_size, sizeof(int), 1, rp);
+                  file_size += record_size;
+                  printf("%s size: %d. \n", filename, file_size);
+                  printf("Number of records: %d\n", num_records);
+                  if((fseek(rp, 0, SEEK_SET)) == 0)
+                  {
+                    fwrite(&file_size, sizeof(int), 1, rp);
+                  }
                 }
+
+                printf("Row inserted successfully\n\n");
               }
             }
           }
-          while (rc == 0 && !values_done);
-        } // valid 
-      } // valid tpd
-
-      if (!rc) {
-        // open file for writing
-        if ((fp = fopen(filename, "wbc")) == NULL) {
-          printf("Error while opening %s file\n", filename);
-          rc = FILE_OPEN_ERROR;
-          cur->tok_value = INVALID;
-        } else {
-          // Update header
-          new_header->num_records += 1;
-          new_header->file_size += new_header->record_size;
-          
-
-          printf("buffer with data: %s\n\n", record_buffer);
-
-          // copy buffer contents into end of new header
-          fwrite(record_buffer, sizeof(record_buffer), 1, fp);
-          fclose(fp);
-
-         
-
-          if (rc == 0) {
-            printf("Row successfully inserted\n");
-          } else {
-            printf("Failed to insert\n");
-          }
-
-          free(record_buffer);
-          fclose(rp); 
-        }        
+        }
       }
-    } // table exists
+    }
   }
-  
-  return rc;
+  return rc; 
 }
 
 int initialize_tpd_list()
