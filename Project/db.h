@@ -114,9 +114,11 @@ typedef enum t_value
   K_IS,         // 34
   K_AND,        // 35
   K_OR,         // 36 - new keyword should be added below this line
-  F_SUM,        // 37
-  F_AVG,        // 38
-	F_COUNT,      // 39 - new function name should be added below this line
+  K_NATURAL, 	// 37
+  K_JOIN,		// 38
+  F_SUM,        // 39
+  F_AVG,        // 40
+	F_COUNT,      // 41 - new function name should be added below this line
 	S_LEFT_PAREN = 70,  // 70
 	S_RIGHT_PAREN,		  // 71
 	S_COMMA,			      // 72
@@ -132,7 +134,7 @@ typedef enum t_value
 } token_value;
 
 /* This constants must be updated when add new keywords */
-#define TOTAL_KEYWORDS_PLUS_TYPE_NAMES 30
+#define TOTAL_KEYWORDS_PLUS_TYPE_NAMES 32
 
 /* New keyword must be added in the same position/order as the enum
    definition above, otherwise the lookup will be wrong */
@@ -140,7 +142,7 @@ char *keyword_table[] =
 {
   "int", "char", "varchar", "create", "table", "not", "null", "drop", "list", "schema",
   "for", "to", "insert", "into", "values", "delete", "from", "where", 
-  "update", "set", "select", "order", "by", "desc", "is", "and", "or",
+  "update", "set", "select", "order", "by", "desc", "is", "and", "or", "natural", "join",
   "sum", "avg", "count"
 };
 
@@ -191,7 +193,9 @@ int sem_drop_table(token_list *t_list);
 int sem_list_tables();
 int sem_list_schema(token_list *t_list);
 int sem_insert_into(token_list *t_list);
+int sem_select_star(token_list *t_list);
 int round_up(int num);
+// void dump_buffer(void *buffer, int buffer_size);
 
 /*
 	Keep a global list of tpd - in real life, this will be stored
