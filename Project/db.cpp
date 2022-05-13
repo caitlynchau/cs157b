@@ -350,6 +350,21 @@ int do_semantic(token_list *tok_list)
 		cur_cmd = SELECT;
 		cur = cur->next->next;
 	}
+	else if ((cur->tok_value == K_DELETE) &&
+					((cur->next != NULL) && (cur->next->tok_value == K_FROM)))
+	{
+		printf("DELETE FROM statement\n");
+		cur_cmd = DELETE;
+		cur = cur->next->next;
+	}
+	else if ((cur->tok_value == K_UPDATE) &&
+					(cur->next != NULL)  && 
+					(cur->next->next != NULL && (cur->next->next->tok_value == K_SET)))
+	{
+		printf("UPDATE statement\n");
+		cur_cmd = UPDATE;
+		cur = cur->next;
+	}
 	else
   {
 		printf("Invalid statement\n");
@@ -377,6 +392,12 @@ int do_semantic(token_list *tok_list)
 						break;
 			case SELECT:
 						rc = sem_select_star(cur);
+						break;
+			case DELETE:
+						rc = sem_delete_from(cur);
+						break;
+			case UPDATE:
+						rc = sem_update(cur);
 						break;
 			default:
 					; /* no action */
@@ -930,6 +951,10 @@ int sem_insert_into(token_list *t_list)
   FILE *rp = NULL;
 
   int record_size = 0;
+	int num_records = 0;
+	int h_offset = 0;
+	int file_size = 0;
+
   int i = 0;
 
   cur = t_list;
@@ -952,7 +977,32 @@ int sem_insert_into(token_list *t_list)
       // Open table file for reading
       char filename[MAX_IDENT_LEN + 4] = {0};
       strcpy(filename, strcat(tab_entry->table_name, ".tab"));
-      if ((fp = fopen(filename, "abc")) == NULL) {
+
+			if ((rp = fopen(filename, "rb")) == NULL) {
+				printf("Error while opening %s file\n", filename);
+				rc = FILE_OPEN_ERROR;
+				cur->tok_value = INVALID;
+			} else {
+				// Read file size
+				if ((fseek(rp, 0, SEEK_SET)) == 0) {
+					fread(&file_size, sizeof(int), 1, rp);
+				}
+				// Read record size
+				if ((fseek(rp, 4, SEEK_SET)) == 0) {
+					fread(&record_size, sizeof(int), 1, rp);
+				}
+				// Read num records
+				if ((fseek(rp, 8, SEEK_SET)) == 0) {
+					fread(&num_records, sizeof(int), 1, rp);
+				}
+				// Read header offset
+				if ((fseek(rp, 12, SEEK_SET)) == 0) {
+					fread(&h_offset, sizeof(int), 1, rp);
+				}
+				fclose(rp);
+			}
+
+      if ((fp = fopen(filename, "rb+")) == NULL) {
         printf("Error while opening %s file\n", filename);
         rc = FILE_OPEN_ERROR;
         cur->tok_value = INVALID;
@@ -1067,18 +1117,24 @@ int sem_insert_into(token_list *t_list)
               return rc;
             }
 
+						int bytes_written = 0;
+
             if (!rc) { // Finished validating values
               // Reset cur to first value
               cur = t_list->next->next->next; // skip '<table_name> values ('
               int num_columns = tab_entry->num_columns;
               cd_entry* col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
 
+							// Move file pointer to next available record
+							fseek(fp, h_offset + ((num_records) * record_size), SEEK_SET);
               for (int i = 0; i < num_columns; i++, col_entry++) {
                 if (cur->tok_value == INT_LITERAL) {
                   int int_size = sizeof(int);
                   int int_value = atoi(cur->tok_string);
                   fwrite(&int_size, 1, 1, fp);
+									bytes_written += 1;
                   fwrite(&int_value, sizeof(int), 1, fp);
+									bytes_written += sizeof(int);
                   cur = cur->next;
                 }
                 
@@ -1086,6 +1142,7 @@ int sem_insert_into(token_list *t_list)
                   int str_length = strlen(cur->tok_string);
                   int max_length = col_entry->col_len;
                   fwrite(&str_length, 1, 1, fp);
+									bytes_written += 1;
                   fwrite(cur->tok_string, str_length, 1, fp);
 
                   int padding = max_length - str_length;
@@ -1093,6 +1150,7 @@ int sem_insert_into(token_list *t_list)
                   if (padding > 0) {
                     fwrite(&zero, padding, 1, fp);
                   }
+									bytes_written += max_length;
                   cur = cur->next;
                 }
 
@@ -1102,11 +1160,13 @@ int sem_insert_into(token_list *t_list)
                   // if int, write 0
                   if (col_entry->col_type == T_INT) {
                     fwrite(&zero, sizeof(int), 1, fp); 
+										bytes_written += sizeof(int);
                   }
                   // if char, write 0 in entire buffer
                   if (col_entry->col_type == T_CHAR) {
                     int col_length = col_entry->col_len;
                     fwrite(&zero, col_length, 1, fp);
+										bytes_written += sizeof(col_length);
                   }
                  
                   cur = cur->next;
@@ -1118,52 +1178,32 @@ int sem_insert_into(token_list *t_list)
                 }
               }
 
+              // Pad the rest of the record with zeros. Round up to nearest byte
+              int zero = 0;
+              int padding = record_size - bytes_written;
+              fwrite(&zero, 1, padding, fp);
+
               total_rows++;
               fflush(fp);
-              fclose(fp);
+              
+              // Update table header:
+							// Update number of records
+							num_records++;
+							if((fseek(fp, 8, SEEK_SET)) == 0) {
+								fwrite(&num_records, sizeof(int), 1, fp);
+							}
 
-              // Update table header: file size and num records
-              if ((rp = fopen(filename, "r+b")) == NULL) {
-                printf("Error while opening %s file\n", filename);
-                rc = FILE_OPEN_ERROR;
-                cur->tok_value = INVALID;
-              } else {
-                int num_records, file_size;
-
-                // Read record size
-                if ((fseek(rp, 4, SEEK_SET)) == 0) {
-                  fread(&record_size, sizeof(int), 1, rp);
-                }
-                
-                // Update number of records
-                if((fseek(rp, 8, SEEK_SET)) == 0)
-                {
-                  fread(&num_records, sizeof(int), 1, rp);
-                  num_records += 1;
-                  
-                  if((fseek(rp, 8, SEEK_SET)) == 0)
-                  {
-                    fwrite(&num_records, 1, 1, rp);
-                  }
-                }
-
-                // Update file size
-                if((fseek(rp, 0, SEEK_SET)) == 0)
-                {
-                  fread(&file_size, sizeof(int), 1, rp);
-                  file_size += record_size;
-                  // printf("%s size: %d. \n", filename, file_size);
-                  printf("Number of records: %d\n", num_records);
-                  if((fseek(rp, 0, SEEK_SET)) == 0)
-                  {
-                    fwrite(&file_size, sizeof(int), 1, rp);
-                  }
-                }
-                printf("Row inserted successfully\n\n");
-              }
+							// Update file size
+							file_size += record_size;
+							if((fseek(fp, 0, SEEK_SET)) == 0) {
+								fwrite(&file_size, sizeof(int), 1, fp);
+							}
+							printf("Row inserted successfully\n\n");
+              
             }
           }
         }
+				fclose(fp);
       }
     }
   }
@@ -1176,10 +1216,11 @@ int sem_select_star(token_list *t_list) {
   tpd_entry *tab_entry1 = NULL;
   tpd_entry *tab_entry2 = NULL;
   cd_entry  *col_entry1 = NULL;
+	cd_entry 	*col_entry2 = NULL;
 
-  int i;
 
-  FILE *fp = NULL;
+  FILE *fp1 = NULL;
+	FILE *fp2 = NULL;
 
   cur = t_list;
   bool natural_join = false;
@@ -1227,7 +1268,6 @@ int sem_select_star(token_list *t_list) {
                 cur->tok_value = INVALID;
                 printf("Table %s not found\n", cur->tok_string);
               } else {
-                // save table2 name
                 natural_join = true;
               }
             }
@@ -1243,32 +1283,33 @@ int sem_select_star(token_list *t_list) {
   if (!rc) {
     // Open table1 file for reading
     int num_rows1 = 0, record_size1 = 0, h_offset1 = 0;
+		int num_rows2 = 0, record_size2 = 0, h_offset2 = 0;
 
     char filename1[MAX_IDENT_LEN + 4] = {0};
     strcpy(filename1, strcat(tab_entry1->table_name, ".tab"));
 
-    if ((fp = fopen(filename1, "rbc")) == NULL) {
+    if ((fp1 = fopen(filename1, "rbc")) == NULL) {
       printf("Error while opening %s file\n", filename1);
       rc = FILE_OPEN_ERROR;
       cur->tok_value = INVALID;
     } 
 
     // Get record size for table1
-		if((fseek(fp, 4, SEEK_SET)) == 0)
-			{
-				fread(&record_size1, sizeof(int), 1, fp);
-			}
+		if((fseek(fp1, 4, SEEK_SET)) == 0)
+		{
+			fread(&record_size1, sizeof(int), 1, fp1);
+		}
 
 		// Get number of records in table1
-		if((fseek(fp, 8, SEEK_SET)) == 0)
+		if((fseek(fp1, 8, SEEK_SET)) == 0)
 		{
-			fread(&num_rows1, sizeof(int), 1, fp);
+			fread(&num_rows1, sizeof(int), 1, fp1);
 		}
 
     // Get header offset for table1
-		if((fseek(fp, 12, SEEK_SET)) == 0)
+		if((fseek(fp1, 12, SEEK_SET)) == 0)
 		{
-			fread(&h_offset1, sizeof(int), 1, fp);
+			fread(&h_offset1, sizeof(int), 1, fp1);
 		}
 
     if (!rc) {
@@ -1285,6 +1326,7 @@ int sem_select_star(token_list *t_list) {
         printf("|");
 
         // Print column names
+				int i;
         for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
 								i < num_columns; i++, col_entry1++) 
         {
@@ -1301,37 +1343,37 @@ int sem_select_star(token_list *t_list) {
           }
         }
         
-        bool notEOF = true;
-        fseek(fp, h_offset1, SEEK_SET); // move file pointer to start of record
+				int num_records_read = 0;
 
         // print one row at a time
-        while(notEOF) {
+        while(num_records_read < num_rows1) {
+					fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move file pointer to start of record
+
           printf("|");
           // Read one record
           col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
-          for (i = 0; i < num_columns; i++) {            
-            char size_byte = fgetc(fp);
+          for (i = 0; i < num_columns; i++) {   
+            char size_byte = fgetc(fp1);
             if (size_byte == '\0') { // Check if NULL
               if (col_entry1->col_type == T_INT) {
-                printf("           NULL |");
+                printf("              - |");
               } else {
-                printf("NULL            |");
+                printf(" -              |");
               }
 
-              // move fp to next record
-              char ch;
+              // move fp to next column
               char *str = (char*)calloc(col_entry1->col_len, 1);
-              fread(str, col_entry1->col_len, 1, fp);
+              fread(str, col_entry1->col_len, 1, fp1);
               free(str);
 
             } else { // Not a NULL value
               if (col_entry1->col_type == T_INT) {
                 int val = 0;
-                fread(&val, sizeof(int), 1, fp);
+                fread(&val, sizeof(int), 1, fp1);
                 printf("%15d |", val);
               } else {
                 char *str = (char*)calloc(col_entry1->col_len, 1);
-                fread(str, col_entry1->col_len, 1, fp);
+                fread(str, col_entry1->col_len, 1, fp1);
                 printf("%-15s |", str);
                 free(str);
               }
@@ -1339,34 +1381,957 @@ int sem_select_star(token_list *t_list) {
             col_entry1++;
           } 
           printf("\n");
-
-          int eof;
-          if (fscanf(fp, "%d", &eof) == EOF) {
-            notEOF = false;
-          }
+					num_records_read += 1;
         } 
+				// Print bottom border
+				for(int i = 0; i < num_columns; i++) {
+					if(i == (num_columns-1)) {
+						printf("%s\n", header);
+					} else {
+						printf("%s", header);
+					}
+				}
       }
       else {
+				bool hasCommonAttribute = false;
         // natural join
+				char filename2[MAX_IDENT_LEN + 4] = {0};
+				strcpy(filename2, strcat(tab_entry2->table_name, ".tab"));
 
-      }
+				if ((fp2 = fopen(filename2, "rbc")) == NULL) {
+					printf("Error while opening %s file\n", filename2);
+					rc = FILE_OPEN_ERROR;
+					cur->tok_value = INVALID;
+				} 
 
-      // Print bottom border
-      for(int i = 0; i < num_columns; i++) {
-        if(i == (num_columns-1)) {
-          printf("%s\n", header);
-        } else {
-          printf("%s", header);
+				// Get record size for table2
+				if((fseek(fp2, 4, SEEK_SET)) == 0)
+				{
+					fread(&record_size2, sizeof(int), 1, fp2);
+				}
+
+				// Get number of records in table2
+				if((fseek(fp2, 8, SEEK_SET)) == 0)
+				{
+					fread(&num_rows2, sizeof(int), 1, fp2);
+				}
+
+				// Get header offset for table2
+				if((fseek(fp2, 12, SEEK_SET)) == 0)
+				{
+					fread(&h_offset2, sizeof(int), 1, fp2);
+				}
+
+				printf("num rows in 2: %d\n", num_rows2);
+
+				// 1. Find join attributes
+				int num_columns1 = tab_entry1->num_columns;
+				int num_columns2 = tab_entry2->num_columns;
+
+				printf("num columns %d\n", num_columns2);
+
+				// change later
+				int c_index = 0;
+				int* commonAttributes1 = (int*)calloc(num_columns1 + num_columns2, sizeof(int));
+				int* commonAttributes2 = (int*)calloc(num_columns1 + num_columns2, sizeof(int));
+
+
+				int i, j;
+				int count = 0;
+				for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+					i < num_columns1; i++, col_entry1++) 
+        {
+          for(j = 0, col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+						j < num_columns2; j++, col_entry2++) 
+					{
+						if (strcmp(col_entry1->col_name, col_entry2->col_name) == 0 
+							&& col_entry1->col_type == col_entry2->col_type
+							&& col_entry1->col_len == col_entry2->col_len) {
+								commonAttributes1[c_index] = col_entry1->col_id; // Save the column ID from the first table
+								commonAttributes2[c_index] = col_entry2->col_id; // Save the column ID from the second table
+								c_index++;
+								hasCommonAttribute = true;
+						}
+					}
         }
-      }
+
+				
+
+				
+
+				if (c_index > 0) {
+					// 2. Print out columns
+					// Print top border
+					int num_joined_columns = num_columns1 + num_columns2 - c_index;
+					for(int i = 0; i < num_joined_columns; i++) {
+						printf("%s", header);
+					}
+					printf("\n");
+
+					printf("|");
+
+					// Print column names
+					int i, j;
+					for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+									i < num_columns1; i++, col_entry1++) 
+					{
+						printf("%-16s|", col_entry1->col_name);
+					}
+					for(i = 0, col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+									i < num_columns2; i++, col_entry2++) 
+					{
+						bool foundColumn = false;
+						for (j = 0; j < c_index; j++) {
+							if (commonAttributes2[j] == col_entry2->col_id) {
+								foundColumn = true;
+							}
+						}
+						if (!foundColumn) {
+							printf("%-16s|", col_entry2->col_name);
+						}
+					}
+					printf("\n");
+
+					// Print bottom border
+					for(int i = 0; i < num_joined_columns; i++) {
+						if(i == (num_joined_columns-1)) {
+							printf("%s\n", header);
+						} else {
+							printf("%s", header);
+						}
+        	}
+
+					// Read tuples of S
+					for (int i = 0; i < num_rows1; i++) {
+					
+						for (int j = 0; j < num_rows2; j++) {
+
+							// CHECKING VALUES
+							
+							bool same = checking_values(fp1, fp2, tab_entry1, tab_entry2, commonAttributes1, 
+								commonAttributes2, c_index, record_size1, record_size2, i, j, h_offset1, h_offset2);
+
+							if (same) {
+								fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move file pointer to start of next record
+								fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move file pointer to start of next record
+
+								cd_entry *col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+								cd_entry *col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+
+								// PRINT TABLE 1
+
+								printf("|");
+								// Read one record
+								for (int ri = 0; ri < num_columns1; ri++) {   
+									char size_byte = fgetc(fp1);
+									if (size_byte == '\0') { // Check if NULL
+										if (col_entry1->col_type == T_INT) {
+											printf("              - |");
+										} else {
+											printf(" -              |");
+										}
+
+										// move fp to next column
+										char *str = (char*)calloc(col_entry1->col_len, 1);
+										fread(str, col_entry1->col_len, 1, fp1);
+										free(str);
+
+									} else { // Not a NULL value
+										if (col_entry1->col_type == T_INT) {
+											int val = 0;
+											fread(&val, sizeof(int), 1, fp1);
+											printf("%15d |", val);
+										} else {
+											char *str = (char*)calloc(col_entry1->col_len, 1);
+											fread(str, col_entry1->col_len, 1, fp1);
+											printf("%-15s |", str);
+											free(str);
+										}
+									}
+									col_entry1++;
+								} 
+
+								// PRINT TABLE 2
+								for (int rj = 0; rj < num_columns2; rj++) {   
+									bool foundCommon = false;
+									for (int x = 0; x < c_index; x++) {
+										
+										if (commonAttributes2[x] == col_entry2->col_id) {
+											foundCommon = true;
+											break;
+										}
+									}
+
+									if (!foundCommon) {
+										char size_byte = fgetc(fp2);
+										if (size_byte == '\0') { // Check if NULL
+											if (col_entry2->col_type == T_INT) {
+												printf("           NULL |");
+											} else {
+												printf("NULL            |");
+											}
+
+											// move fp to next column
+											char *str = (char*)calloc(col_entry2->col_len, 1);
+											fread(str, col_entry2->col_len, 1, fp2);
+											free(str);
+
+										} else { // Not a NULL value
+											if (col_entry2->col_type == T_INT) {
+												int val = 0;
+												fread(&val, sizeof(int), 1, fp2);
+												printf("%15d |", val);
+											} else {
+												char *str = (char*)calloc(col_entry2->col_len, 1);
+												fread(str, col_entry2->col_len, 1, fp2);
+												printf("%-15s |", str);
+												free(str);
+											}
+										} 
+									} else {
+										// skip this value
+										char size_byte = fgetc(fp2);
+										char *str = (char*)calloc(col_entry2->col_len, 1);
+										fread(str, col_entry2->col_len, 1, fp2);
+										free(str);
+									}
+										
+									col_entry2++;									
+								} 
+								printf("\n");
+
+							} 
+						}	
+					} // finish iterating through t1 and t2
+
+					// Print bottom border
+					for(int i = 0; i < num_joined_columns; i++) {
+						if(i == (num_joined_columns-1)) {
+							printf("%s\n", header);
+						} else {
+							printf("%s", header);
+						}
+        	}
+				}
+      } // end natural join
+
+      
     }
+		fclose(fp1);
+		fclose(fp2);
   
   }
 
-
-
   return rc;
 }
+
+/*
+* fp1 - points to a record in table1
+* fp2 - points to a record in table2
+* col_entry1 - column descriptors for table 1
+* col_entry2 - column descriptors for table 2
+* commonAttributes - index of the columns in common
+*/
+bool checking_values(
+	FILE *fp1, 
+	FILE *fp2, 
+	tpd_entry *tab_entry1, 
+	tpd_entry *tab_entry2,
+	int *commonAttributes1,
+	int *commonAttributes2,
+	int c_index,
+	int record_size1,
+	int record_size2,
+	int i,
+	int j,
+	int h_offset1,
+	int h_offset2
+) {
+	bool matchingValues = false;
+
+	for (int ci = 0; ci < c_index; ci++) {
+
+		cd_entry *col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+		cd_entry *col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+
+		fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move file pointer to start of next record
+		fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move file pointer to start of next record
+
+		int col1 = commonAttributes1[ci];
+		int col2 = commonAttributes2[ci];
+
+		int int1, int2;
+		char *str1, *str2;
+
+		// TABLE 1
+		// Move fp to column in record
+		for (int k = 0; k < col1; k++) {
+			fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+			col_entry1++;
+		}
+		// Read the value
+		char size_byte1 = fgetc(fp1);
+		if (col_entry1->col_type  == T_INT) {
+			fread(&int1, sizeof(int), 1, fp1);
+		} else if (col_entry1->col_type  == T_CHAR) {
+			str1 = (char*)calloc(col_entry1->col_len, 1);
+			fread(str1, col_entry1->col_len, 1, fp1);
+		}
+
+		// TABLE 2
+		// Move fp to column in record
+		for (int l = 0; l < col2; l++) {
+			fseek(fp2, 1 + col_entry2->col_len, SEEK_CUR);
+			col_entry2++;
+		}
+		// Read the value
+		char size_byte2 = fgetc(fp2);
+		if (col_entry2->col_type  == T_INT) {
+			fread(&int2, sizeof(int), 1, fp2);
+		} else if (col_entry2->col_type  == T_CHAR) {
+			str2 = (char*)calloc(col_entry2->col_len, 1);
+			fread(str2, col_entry2->col_len, 1, fp2);
+		}
+
+
+		if (col_entry1->col_type == T_INT) {
+			if (int1 != int2) {
+				return false;
+			}
+		} else if (col_entry1->col_type == T_CHAR) {
+			if (strcmp(str1, str2) != 0) {
+				return false;
+			}
+			free(str1);
+			free(str2);
+		}
+
+		fflush(fp1);
+		fflush(fp2);	
+	} // end for
+
+	matchingValues = true;
+
+	return matchingValues;
+}
+
+int sem_delete_from(token_list *t_list) {
+	int rc = 0;
+  token_list *cur;
+  tpd_entry *tab_entry = NULL;
+  cd_entry  *col_entry = NULL;
+
+  FILE *fp = NULL;
+  FILE *rp = NULL;
+
+	int file_size = 0;
+  int record_size = 0;
+	int num_records = 0;
+	int h_offset = 0;
+
+  cur = t_list;
+
+  if ((cur->tok_class != keyword) &&
+		  (cur->tok_class != identifier) &&
+			(cur->tok_class != type_name))
+	{
+		rc = INVALID_TABLE_NAME;
+		cur->tok_value = INVALID;
+	}
+	else
+	{
+    // Check if table exists
+    if ((tab_entry = get_tpd_from_list(cur->tok_string)) == NULL) {
+      rc = TABLE_NOT_EXIST;
+      cur->tok_value = INVALID;
+      printf("Table %s not found\n", cur->tok_string);
+    } else { // Found a valid tpd
+      // Open table file for reading
+      char filename[MAX_IDENT_LEN + 4] = {0};
+      strcpy(filename, strcat(tab_entry->table_name, ".tab"));
+
+			// Get record size
+			if ((rp = fopen(filename, "rb")) == NULL) {
+				printf("Error while opening %s file\n", filename);
+				rc = FILE_OPEN_ERROR;
+				cur->tok_value = INVALID;
+			} else {
+				// Read file size
+				if ((fseek(rp, 0, SEEK_SET)) == 0) {
+					fread(&file_size, sizeof(int), 1, rp);
+				}
+				// Read record size
+				if ((fseek(rp, 4, SEEK_SET)) == 0) {
+					fread(&record_size, sizeof(int), 1, rp);
+				}
+				// Read num records
+				if ((fseek(rp, 8, SEEK_SET)) == 0) {
+					fread(&num_records, sizeof(int), 1, rp);
+				}
+				// Read header offset
+				if ((fseek(rp, 12, SEEK_SET)) == 0) {
+					fread(&h_offset, sizeof(int), 1, rp);
+				}
+				fclose(rp);
+			}
+			
+      if ((fp = fopen(filename, "rb+")) == NULL) {
+        printf("Error while opening %s file\n", filename);
+        rc = FILE_OPEN_ERROR;
+        cur->tok_value = INVALID;
+      } else {
+        cur = cur->next;
+				// delete from table\0
+
+				if (cur->tok_value == EOC) {
+					printf("EOC\n");
+					// Delete all tuples from table
+					// Set number of records to 0
+					num_records = 0;
+					if ((fseek(rp, 8, SEEK_SET)) == 0) {
+						fwrite(&num_records, sizeof(int), 1, fp);
+					}
+					// Set file size to header offset
+					file_size = h_offset;
+					if ((fseek(rp, 0, SEEK_SET)) == 0) {
+						fwrite(&file_size, sizeof(int), 1, fp);
+					}
+				}
+				else 
+				{
+					// delete from table where colNam
+
+					int comparisonOp = 0;
+					int conditionCol_type = 0;
+					int conditionCol_ID = 0;
+				
+					if (cur->tok_value != K_WHERE) {
+						rc = INVALID_STATEMENT;
+						cur->tok_value = INVALID;
+					} else {
+						cur = cur->next;
+						col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+						
+						if ((cur->tok_class != keyword) &&
+								(cur->tok_class != identifier) &&
+								(cur->tok_class != type_name)) 
+						{
+							printf("Error: Invalid column name\n");
+							rc = INVALID_COLUMN_NAME;
+							cur->tok_value = INVALID;
+						}
+						else 
+						{
+							// Check if valid column name
+							bool foundColumn = false;
+
+							for (int ci = 0; ci < tab_entry->num_columns; ci++) {
+								if (strcmp(col_entry->col_name, cur->tok_string) == 0) {
+									foundColumn = true;
+									conditionCol_type = col_entry->col_type;
+									conditionCol_ID = col_entry->col_id;
+									break;
+								}
+								col_entry++;
+							}
+
+							if (!foundColumn) {
+								printf("Error: Invalid column name\n");
+								rc = INVALID_COLUMN_NAME;
+								cur->tok_value = INVALID;
+							} else {
+								// Check comparison operator
+								cur = cur->next;
+								if (cur->tok_value == S_GREATER && conditionCol_type == T_INT) {
+									comparisonOp = S_GREATER;
+								}
+								else if (cur->tok_value == S_LESS && conditionCol_type == T_INT) {
+									comparisonOp = S_LESS;
+								}
+								else if (cur->tok_value == S_EQUAL) {
+									comparisonOp = S_EQUAL;
+								} 
+								else {
+									printf("Error: Invalid comparison operator\n");
+									rc = INVALID_TYPE;
+									cur->tok_value = INVALID;
+								}
+							}
+						}
+					}
+					
+					if (!rc) {
+						int compValue;
+						char compString[MAX_TOK_LEN];
+						cur = cur->next;
+						if (cur->tok_value != INT_LITERAL && cur->tok_value != STRING_LITERAL && cur->tok_value != K_NULL) {
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+							printf("Error: Expected int, string, or null\n");
+						}
+						else if (conditionCol_type == T_INT && cur->tok_value != INT_LITERAL) {
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+							printf("Error: Expected int literal\n");
+						}
+						else if (conditionCol_type == T_CHAR && cur->tok_value != STRING_LITERAL) {
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+							printf("Error: Expected string literal\n");
+						} 
+						else {
+							// save the comparison value
+							if (cur->tok_value == INT_LITERAL) {
+								compValue = atoi(cur->tok_string);
+							} else {
+								strcpy(compString, cur->tok_string);
+							}
+
+							bool atLeastOneRowFound = false;
+
+							int records_read = 0;
+							while (records_read < num_records) {
+								fseek(fp, h_offset + (records_read * record_size), SEEK_SET); // move fp to next record
+								col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+								
+								// Move fp to the conditional column
+								for (int ci = 0; ci < conditionCol_ID; ci++) {
+									fseek(fp, 1 + col_entry->col_len, SEEK_CUR);
+									col_entry++;
+								}
+
+								// Check if condition is met
+								bool conditionMet = false;
+								char size_byte = fgetc(fp);
+								if (size_byte == '\0') {
+									records_read++;
+								} else {
+									if (conditionCol_type == T_INT) {
+										int val = -1;
+										fread(&val, sizeof(int), 1, fp);
+										if (comparisonOp == S_EQUAL) {
+											if (val == compValue) {
+												conditionMet = true;
+												atLeastOneRowFound = true;
+											}
+										} else if (comparisonOp == S_GREATER) {
+											if (val > compValue) {
+												conditionMet = true;
+												atLeastOneRowFound = true;
+											}
+										} else if (comparisonOp == S_LESS) {
+											if (val < compValue) {
+												conditionMet = true;
+												atLeastOneRowFound = true;
+											}
+										}
+									} else { // char
+										char *str = (char*)calloc(col_entry->col_len, 1);
+										fread(str, col_entry->col_len, 1, fp);
+										if (strcmp(str, compString) == 0) {
+											conditionMet = true;
+											atLeastOneRowFound = true;
+										}
+										free(str);
+									}
+
+									if (conditionMet) {
+										// Move file pointer to the last tuple in table
+										fseek(fp, h_offset + ((num_records - 1) * record_size), SEEK_SET);
+										// Save the last tuple from table
+										char *last_record = (char*)calloc(record_size, 1);
+										fread(last_record, record_size, 1, fp);
+										
+										// Reset file pointer to beginning of the record to be deleted
+										fseek(fp, h_offset + (records_read * record_size), SEEK_SET); 
+
+										// Replace current record with the last record
+										fwrite(last_record, record_size, 1, fp);
+										free(last_record);
+
+										// Decrement record count in tab file
+										num_records--;
+										if ((fseek(rp, 8, SEEK_SET)) == 0) {
+											fwrite(&num_records, sizeof(int), 1, fp);
+										}
+										// Decrement file size in tab file
+										file_size -= record_size;
+										if ((fseek(rp, 0, SEEK_SET)) == 0) {
+											fwrite(&file_size, sizeof(int), 1, fp);
+										}
+
+										fflush(fp);
+										
+										// Stay at this current record that was just placed
+									} else {
+										// Go to the next record
+										records_read++;
+									}
+								}
+							}
+
+							if (!atLeastOneRowFound) {
+								printf("No rows found.\n");
+							}
+						}
+					}
+				}
+				fclose(fp);
+			}
+		}
+	}
+
+	return rc;
+
+}
+
+int sem_update(token_list *t_list) {
+	int rc = 0;
+  token_list *cur;
+  tpd_entry *tab_entry = NULL;
+  cd_entry  *col_entry = NULL;
+
+  FILE *fp = NULL;
+  FILE *rp = NULL;
+
+  int record_size = 0;
+	int num_records = 0;
+	int h_offset = 0;
+	int num_columns = 0;
+	int newValue;
+	char newString[MAX_TOK_LEN];
+	int updateColumm_type = 0;
+	int updateColumn_ID = 0;
+
+	cur = t_list;
+
+	if ((cur->tok_class != keyword) &&
+		  (cur->tok_class != identifier) &&
+			(cur->tok_class != type_name))
+	{
+		rc = INVALID_TABLE_NAME;
+		cur->tok_value = INVALID;
+	}
+	else 
+	{
+		// Check if table exists
+    if ((tab_entry = get_tpd_from_list(cur->tok_string)) == NULL) {
+      rc = TABLE_NOT_EXIST;
+      cur->tok_value = INVALID;
+      printf("Table %s not found\n", cur->tok_string);
+    } else { // Found a valid tpd
+      // Open table file for reading
+      char filename[MAX_IDENT_LEN + 4] = {0};
+      strcpy(filename, strcat(tab_entry->table_name, ".tab"));
+
+			// Get number of columns
+			num_columns = tab_entry->num_columns;
+
+			// Get record size
+			if ((rp = fopen(filename, "r+b")) == NULL) {
+				printf("Error while opening %s file\n", filename);
+				rc = FILE_OPEN_ERROR;
+				cur->tok_value = INVALID;
+			} else {
+				// Read record size
+				if ((fseek(rp, 4, SEEK_SET)) == 0) {
+					fread(&record_size, sizeof(int), 1, rp);
+				}
+				// Read num records
+				if ((fseek(rp, 8, SEEK_SET)) == 0) {
+					fread(&num_records, sizeof(int), 1, rp);
+				}
+				// Read header offset
+				if ((fseek(rp, 12, SEEK_SET)) == 0) {
+					fread(&h_offset, sizeof(int), 1, rp);
+				}
+				fclose(rp);
+			}
+
+			if ((fp = fopen(filename, "rb+")) == NULL) {
+        printf("Error while opening %s file\n", filename);
+        rc = FILE_OPEN_ERROR;
+        cur->tok_value = INVALID;
+      } else {
+				cur = cur->next;
+				if (cur->tok_value != K_SET) {
+					rc = INVALID_STATEMENT;
+					cur->tok_value = INVALID;
+					printf("Error: Invalid syntax. Expected SET\n");
+				} else {
+					
+					cur = cur->next;
+					col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+					if ((cur->tok_class != keyword) &&
+							(cur->tok_class != identifier) &&
+							(cur->tok_class != type_name)) 
+					{
+						printf("Error: Invalid column name\n");
+						rc = INVALID_COLUMN_NAME;
+						cur->tok_value = INVALID;
+					} else {
+						// Check if valid column name
+						bool foundColumn = false;
+
+						for (int ci = 0; ci < tab_entry->num_columns; ci++) {
+							if (strcmp(col_entry->col_name, cur->tok_string) == 0) {
+								foundColumn = true;
+								updateColumm_type = col_entry->col_type;
+								updateColumn_ID = col_entry->col_id;
+								break;
+							}
+							col_entry++;
+						}
+
+						if (!foundColumn) {
+							printf("Error: Invalid column name\n");
+							rc = INVALID_COLUMN_NAME;
+							cur->tok_value = INVALID;
+						} else {
+							// Next operator should be =
+							cur = cur->next;
+							if (cur->tok_value != S_EQUAL) {
+								printf("Error: Invalid operator\n");
+								rc = INVALID_STATEMENT;
+								cur->tok_value = INVALID;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (!rc) {			
+		cur = cur->next;
+		if (cur->tok_value != INT_LITERAL && cur->tok_value != STRING_LITERAL && cur->tok_value != K_NULL) {
+			rc = INVALID_TYPE;
+			cur->tok_value = INVALID;
+			printf("Error: Expected int, string, or null\n");
+		} else if (updateColumm_type == T_INT && cur->tok_value != INT_LITERAL) {
+			rc = INVALID_TYPE;
+			cur->tok_value = INVALID;
+			printf("Error: Expected int literal\n");
+		} else if (updateColumm_type == T_CHAR && cur->tok_value != STRING_LITERAL) {
+			rc = INVALID_TYPE;
+			cur->tok_value = INVALID;
+			printf("Error: Expected string literal\n");
+		} else {
+			// save the comparison value
+			if (cur->tok_value == INT_LITERAL) {
+				newValue = atoi(cur->tok_string);
+			} else {
+				strcpy(newString, cur->tok_string);
+			}
+		
+			cur = cur->next;
+			if (cur->tok_value == EOC) {
+
+				// if there is no WHERE clause
+				for (int ri = 0; ri < num_records; ri++) {
+					fseek(fp, h_offset + (ri * record_size), SEEK_SET); // move fp to next record
+					col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+					
+					// Move fp to the column to update
+					for (int ci = 0; ci < updateColumn_ID; ci++) {
+						fseek(fp, 1 + col_entry->col_len, SEEK_CUR);
+						col_entry++;
+					}
+					
+					// Update the value
+					if (updateColumm_type == T_INT) {
+						printf("here\n");
+						int int_size = sizeof(int);
+						fwrite(&int_size, 1, 1, fp);
+						fwrite(&newValue, sizeof(int), 1, fp);
+					} else {
+						int str_length = strlen(newString);
+						int max_length = col_entry->col_len;
+						fwrite(&str_length, 1, 1, fp);
+						fwrite(newString, str_length, 1, fp);
+						int padding = max_length - str_length;
+						int zero = 0;
+						if (padding > 0) {
+							fwrite(&zero, padding, 1, fp);
+						}
+					}		
+					fflush(fp);
+				}
+
+			} else if (cur->tok_value != K_WHERE) {
+				rc = INVALID_STATEMENT;
+				cur->tok_value = INVALID;
+				printf("Error: Invalid syntax after update\n");
+			} else {
+				cur = cur->next;
+
+				int relationalOp = 0;
+				int conditionCol_type = 0;
+				int conditionCol_ID = 0;
+				col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+						
+				if ((cur->tok_class != keyword) &&
+						(cur->tok_class != identifier) &&
+						(cur->tok_class != type_name)) 
+				{
+					printf("Error: Invalid column name\n");
+					rc = INVALID_COLUMN_NAME;
+					cur->tok_value = INVALID;
+				}else 
+				{
+					// Check if valid column name
+					bool foundColumn = false;
+
+					for (int ci = 0; ci < tab_entry->num_columns; ci++) {
+						if (strcmp(col_entry->col_name, cur->tok_string) == 0) {
+							foundColumn = true;
+							conditionCol_type = col_entry->col_type;
+							conditionCol_ID = col_entry->col_id;
+							break;
+						}
+						col_entry++;
+					}
+
+					if (!foundColumn) {
+						printf("Error: Invalid column name\n");
+						rc = INVALID_COLUMN_NAME;
+						cur->tok_value = INVALID;
+					} else {
+						// Check comparison operator
+						cur = cur->next;
+						if (cur->tok_value == S_GREATER && conditionCol_type == T_INT) {
+							relationalOp = S_GREATER;
+						}
+						else if (cur->tok_value == S_LESS  && conditionCol_type == T_INT) {
+							relationalOp = S_LESS;
+						}
+						else if (cur->tok_value == S_EQUAL) {
+							relationalOp = S_EQUAL;
+						} 
+						else {
+							printf("Error: Invalid condition operator\n");
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+						}
+					}
+				}
+
+				if (!rc) {
+					int conditionalValue;
+					char conditionalStr[MAX_TOK_LEN];
+					cur = cur->next;
+					if (cur->tok_value != INT_LITERAL && cur->tok_value != STRING_LITERAL && cur->tok_value != K_NULL) {
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						printf("Error: Expected int, string, or null\n");
+					}
+					else if (conditionCol_type == T_INT && cur->tok_value != INT_LITERAL) {
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						printf("Error: Expected int literal\n");
+					}
+					else if (conditionCol_type == T_CHAR && cur->tok_value != STRING_LITERAL) {
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						printf("Error: Expected string literal\n");
+					} else {
+						// save the conditional value
+						if (cur->tok_value == INT_LITERAL) {
+							conditionalValue = atoi(cur->tok_string);
+						} else {
+							strcpy(conditionalStr, cur->tok_string);
+						}
+
+						bool atLeastOneRowFound = false;
+
+						for (int ri = 0; ri < num_records; ri++) {
+							fseek(fp, h_offset + (ri * record_size), SEEK_SET); // move fp to next record
+							col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+							
+							// Move fp to the conditional column
+							for (int ci = 0; ci < conditionCol_ID; ci++) {
+								fseek(fp, 1 + col_entry->col_len, SEEK_CUR);
+								col_entry++;
+							}
+
+							// Check if condition is met
+							bool conditionMet = false;
+							char size_byte = fgetc(fp);
+							if (size_byte == '\0') {
+								continue;
+							} 
+
+							if (conditionCol_type == T_INT) {
+								int val = 0;
+								fread(&val, sizeof(int), 1, fp);
+								if (relationalOp == S_EQUAL) {
+									if (val == conditionalValue) {
+										conditionMet = true;
+										atLeastOneRowFound = true;
+									}
+								} else if (relationalOp == S_GREATER) {
+									if (val > conditionalValue) {
+										conditionMet = true;
+										atLeastOneRowFound = true;
+									}
+								} else if (relationalOp == S_LESS) {
+									if (val < conditionalValue) {
+										conditionMet = true;
+										atLeastOneRowFound = true;
+									}
+								}
+							} else { // char
+								char *str = (char*)calloc(col_entry->col_len, 1);
+								fread(str, col_entry->col_len, 1, fp);
+								if (strcmp(str, conditionalStr) == 0) {
+									conditionMet = true;
+									atLeastOneRowFound = true;
+								}
+								free(str);
+							}
+
+							if (conditionMet) {
+								// Reset file pointer to beginning of record
+								fseek(fp, h_offset + (ri * record_size), SEEK_SET); // move fp to next record
+								col_entry = (cd_entry*)((char*)tab_entry + tab_entry->cd_offset);
+								
+								// Move fp to the column to update
+								for (int ci = 0; ci < updateColumn_ID; ci++) {
+									fseek(fp, 1 + col_entry->col_len, SEEK_CUR);
+									col_entry++;
+								}
+								// Update the value
+								if (updateColumm_type == T_INT) {
+									int int_size = sizeof(int);
+									fwrite(&int_size, 1, 1, fp);
+									fwrite(&newValue, sizeof(int), 1, fp);
+								} else {
+									int str_length = strlen(newString);
+									int max_length = col_entry->col_len;
+									fwrite(&str_length, 1, 1, fp);
+									fwrite(newString, str_length, 1, fp);
+									int padding = max_length - str_length;
+									int zero = 0;
+									if (padding > 0) {
+										fwrite(&zero, padding, 1, fp);
+									}
+								}		
+								fflush(fp);
+							} 
+						}
+
+						if (!atLeastOneRowFound) {
+							printf("No rows found.\n");
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return rc;
+}
+
 
 int initialize_tpd_list()
 {
