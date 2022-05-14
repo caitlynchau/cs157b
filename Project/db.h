@@ -3,6 +3,8 @@ db.h - This file contains all the structures, defines, and function
 	prototype for the db.exe program.
 *********************************************************************/
 
+#include <stdio.h>
+
 #define MAX_IDENT_LEN   16
 #define MAX_NUM_COL			16
 #define MAX_TOK_LEN			32
@@ -126,6 +128,8 @@ typedef enum t_value
   S_EQUAL,            // 74
   S_LESS,             // 75
   S_GREATER,          // 76
+	S_ISNULL,           // 77 - added
+ 	S_ISNOTNULL,        // 78 - added
 	IDENT = 85,			    // 85
 	INT_LITERAL = 90,	  // 90
   STRING_LITERAL,     // 91
@@ -157,7 +161,8 @@ typedef enum s_statement
   INSERT,                   // 104
   DELETE,                   // 105
   UPDATE,                   // 106
-  SELECT                    // 107
+  SELECT,                    // 107
+	
 } semantic_statement;
 
 /* This enum has a list of all the errors that should be detected
@@ -193,8 +198,25 @@ int sem_drop_table(token_list *t_list);
 int sem_list_tables();
 int sem_list_schema(token_list *t_list);
 int sem_insert_into(token_list *t_list);
-int sem_select_star(token_list *t_list);
+int sem_select(token_list *t_list);
+int sem_delete_from(token_list *t_list);
+int sem_update(token_list *t_list);
+
 int round_up(int num);
+bool checking_values(
+	FILE *fp1, 
+	FILE *fp2, 
+	tpd_entry *tab_entry1, 
+	tpd_entry *tab_entry2,
+	int *commonAttributes1,
+	int *commonAttributes2,
+	int c_index,
+	int record_size1,
+	int record_size2,
+	int i,
+	int j,
+	int h_offset1,
+	int h_offset2);
 // void dump_buffer(void *buffer, int buffer_size);
 
 /*
