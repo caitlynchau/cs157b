@@ -343,12 +343,11 @@ int do_semantic(token_list *tok_list)
 		cur_cmd = INSERT;
 		cur = cur->next->next;
 	}
-  else if ((cur->tok_value == K_SELECT) &&
-					((cur->next != NULL) && (cur->next->tok_value == S_STAR)))
+  else if ((cur->tok_value == K_SELECT) && (cur->next != NULL) )
 	{
-		printf("SELECT * statement\n");
+		printf("SELECT statement\n");
 		cur_cmd = SELECT;
-		cur = cur->next->next;
+		cur = cur->next;
 	}
 	else if ((cur->tok_value == K_DELETE) &&
 					((cur->next != NULL) && (cur->next->tok_value == K_FROM)))
@@ -391,7 +390,7 @@ int do_semantic(token_list *tok_list)
 						rc = sem_insert_into(cur);
 						break;
 			case SELECT:
-						rc = sem_select_star(cur);
+						rc = sem_select(cur);
 						break;
 			case DELETE:
 						rc = sem_delete_from(cur);
@@ -1210,7 +1209,7 @@ int sem_insert_into(token_list *t_list)
   return rc; 
 }
 
-int sem_select_star(token_list *t_list) {
+int sem_select(token_list *t_list) {
   int rc = 0;
   token_list *cur;
   tpd_entry *tab_entry1 = NULL;
@@ -1224,67 +1223,457 @@ int sem_select_star(token_list *t_list) {
 
   cur = t_list;
   bool natural_join = false;
+	bool select_star = false;
+	bool where_clause = false;
+	int numSelectColumns = 0;
 
+	int num_rows1 = 0, record_size1 = 0, h_offset1 = 0;
+	int num_rows2 = 0, record_size2 = 0, h_offset2 = 0;
+
+	// column info for WHERE
+	int col1_type, col2_type; // column type
+	int col1_ID, col2_ID; // column ID
+	int col1_tab, col2_tab; // table 1 or 2
+	int condition1_op, condition2_op; // operator =, <, >, IS-NULL, IS-NOT-NULL
+	int condition1_val, condition2_val;
+	char condition1_str[MAX_TOK_LEN], condition2_str [MAX_TOK_LEN];
+	int and_or = -1;
+	
+	// select <column> info
+	int *selectColID, *selectColTable;
+
+	
   if ((cur->tok_class != keyword) &&
 		  (cur->tok_class != identifier) &&
-			(cur->tok_class != type_name))
+			(cur->tok_class != type_name) &&
+			(cur->tok_value != S_STAR))
 	{
 		rc = INVALID_TABLE_NAME;
 		cur->tok_value = INVALID;
+		printf("Error: Expected keyword, identifier, or type name!\n");
+		return rc;
 	}
 	else
 	{
-    if (cur->tok_value != K_FROM) {
-      rc = INVALID_STATEMENT;
-      cur->tok_value = INVALID;
-    } 
-    else {
+    if (cur->tok_value == S_STAR && cur->next->tok_value == K_FROM) {
+			select_star = true;
       cur = cur->next;
-      // Check if table exists
-      
-      if ((tab_entry1 = get_tpd_from_list(cur->tok_string)) == NULL) {
-        rc = TABLE_NOT_EXIST;
-        cur->tok_value = INVALID;
-        printf("Table %s not found\n", cur->tok_string);
-      } else { // Found a valid tpd
-        
-        if (cur->next->tok_value != EOC && cur->next->tok_value == K_NATURAL && cur->next->next->tok_value == K_JOIN) {
-          // natural join keyword
-          // check table 2
-          cur = cur->next->next->next;
-          if ((cur->tok_class != keyword) &&
-              (cur->tok_class != identifier) &&
-              (cur->tok_class != type_name)) {
-            // Error
-            rc = INVALID_TABLE_NAME;
-            cur->tok_value = INVALID;
-          } else {
-            if (cur->next->tok_value != EOC) {
-              rc = INVALID_STATEMENT;
-              cur->next->tok_value = INVALID;
-            } else {
-              if ((tab_entry2 = get_tpd_from_list(cur->tok_string)) == NULL) {
-                rc = TABLE_NOT_EXIST;
-                cur->tok_value = INVALID;
-                printf("Table %s not found\n", cur->tok_string);
-              } else {
-                natural_join = true;
-              }
-            }
-          }
-        } else if (cur->next->tok_value != EOC) {
-          rc = INVALID_STATEMENT;
-          cur->next->tok_value = INVALID;
-        }
-      }
-    }
+    } else { // Did not find a *
+
+			// Look ahead to find FROM keyword
+			
+			while (cur->tok_value != K_FROM) {
+
+				if (cur->tok_value == EOC) {
+					rc = INVALID_STATEMENT;
+					cur->tok_value = INVALID;
+					return rc;
+				}
+
+				else if (cur->tok_value == S_COMMA) {
+					if ((cur->next->tok_class != keyword) 
+					&& (cur->next->tok_class != identifier) 
+					&& (cur->next->tok_class != type_name)) {
+						rc = INVALID_COLUMN_NAME;
+						cur->tok_value = INVALID;
+						printf("Error: Invalid column name after comma\n");
+						return rc;
+					} else {
+						cur = cur->next;
+					}
+				}
+
+				else if ((cur->tok_class != keyword) 
+					&& (cur->tok_class != identifier) 
+					&& (cur->tok_class != type_name)) {
+					rc = INVALID_COLUMN_NAME;
+					cur->tok_value = INVALID;
+					printf("Error: Invalid column name. Expected keyword, identifier, type name\n");
+					return rc;
+				}
+				else {
+					numSelectColumns++;
+					cur = cur->next;
+				}
+			} // End while
+
+			
+			printf("num columns %d!\n", numSelectColumns);
+			if (cur->tok_value != K_FROM) {
+				rc = INVALID_STATEMENT;
+				cur->tok_value = INVALID;
+				printf("Error: Expected FROM clause to select from\n");
+				return rc;
+			} 
+		}
+
+		// Should be on FROM now. Check if table exists and check for natural join
+		cur = cur->next;
+		if ((tab_entry1 = get_tpd_from_list(cur->tok_string)) == NULL) {
+			rc = TABLE_NOT_EXIST;
+			cur->tok_value = INVALID;
+			printf("Table %s not found\n", cur->tok_string);
+			return rc;
+		} else {
+			// Check for 'natural join' keyword
+			if (cur->next->tok_value != EOC && cur->next->tok_value == K_NATURAL && cur->next->next->tok_value == K_JOIN) {
+				// check table 2
+				cur = cur->next->next->next;
+				if ((cur->tok_class != keyword) &&
+						(cur->tok_class != identifier) &&
+						(cur->tok_class != type_name)) {
+					rc = INVALID_TABLE_NAME;
+					cur->tok_value = INVALID;
+					return rc;
+				} else {
+					// Check if table 2 exists
+					if ((tab_entry2 = get_tpd_from_list(cur->tok_string)) == NULL) {
+						rc = TABLE_NOT_EXIST;
+						cur->tok_value = INVALID;
+						printf("Table %s not found\n", cur->tok_string);
+						return rc;
+					} else {
+						natural_join = true;
+					}
+				}
+			} 
+		}
+		
+		// After checking that tables exist, verify that columns are valid in those tables
+
+		if (!rc && !select_star && numSelectColumns > 0) {
+			selectColID = (int*)calloc(numSelectColumns, sizeof(int));
+			selectColTable = (int*)calloc(numSelectColumns, sizeof(int));
+
+			// Go back to verify columns
+			token_list *temp = t_list; // Move back to beginnning
+			
+			for (int ci = 0; ci < numSelectColumns; ci++) {
+
+				bool isValid = false;
+				col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+
+				// Check table1's columns
+				for (int i = 0; i < tab_entry1->num_columns; i++, col_entry1++) {
+					if (strcmp(col_entry1->col_name, temp->tok_string) == 0) {
+						selectColID[ci] = col_entry1->col_id;
+						selectColTable[ci] = 1; // table 1
+						isValid = true;
+						break;
+					}
+				}
+
+				// Check table2's columns
+				if (natural_join && !isValid) {
+					col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+				
+					for (int i = 0; i < tab_entry2->num_columns; i++, col_entry2++) {
+						if (strcmp(col_entry2->col_name, temp->tok_string) == 0) {
+							isValid = true;
+							selectColID[ci] = col_entry2->col_id;
+							selectColTable[ci] = 2; // table 1
+							break;
+						}
+					}
+				}
+
+				if (!isValid) {
+					rc = INVALID_COLUMN_NAME;
+					temp->tok_value = INVALID;
+					printf("Error: Invalid column name\n");
+					return rc;
+				}
+
+				if (ci == numSelectColumns - 1) {
+					temp = temp->next;
+				} else {
+					temp = temp->next->next; // skip columns
+				}
+			} // End for
+		} 
   }
+
+	// Cur is currently on <table name> Check for WHERE keyword
+	cur = cur->next;
+	if (cur->tok_value == K_WHERE) {
+		where_clause = true;
+		cur = cur->next;
+		
+		if ((cur->tok_class != keyword) &&
+				(cur->tok_class != identifier) &&
+				(cur->tok_class != type_name)) 
+		{
+			printf("Error: Invalid column name\n");
+			rc = INVALID_COLUMN_NAME;
+			cur->tok_value = INVALID;
+			return rc;
+		}
+		else 
+		{
+			// Check if valid column name in table 1
+			bool foundColumn = false;
+
+			col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);	
+			for (int ci = 0; ci < tab_entry1->num_columns; ci++) {
+				if (strcmp(col_entry1->col_name, cur->tok_string) == 0) {
+					foundColumn = true;
+					col1_type = col_entry1->col_type;
+					col1_ID = col_entry1->col_id;
+					col1_tab = 1; 
+					break;
+				}
+				col_entry1++;
+			}
+
+			// Check if valid column name in table 2
+			if (!foundColumn && natural_join) {
+				col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+				for (int ci = 0; ci < tab_entry2->num_columns; ci++) {
+					if (strcmp(col_entry2->col_name, cur->tok_string) == 0) {
+						foundColumn = true;
+						col1_type = col_entry2->col_type;
+						col1_ID = col_entry2->col_id;
+						col1_tab = 2; 
+						break;
+					}
+					col_entry2++;
+				}
+			}
+		
+			if (!foundColumn) {
+				printf("Error: Invalid column name\n");
+				rc = INVALID_COLUMN_NAME;
+				cur->tok_value = INVALID;
+				return rc;
+			} else {
+				// Check comparison operator
+				cur = cur->next;
+				// IS NULL
+				if (cur->tok_value == K_IS && cur->next->tok_value == K_NULL) {
+					condition1_op = S_ISNULL;
+					cur = cur->next->next;
+				}
+				else if (cur->tok_value == K_IS && cur->next->tok_value == K_NOT && cur->next->next->tok_value == K_NULL) {
+					condition1_op = S_ISNOTNULL;
+					cur = cur->next->next->next;
+				}
+				else if (cur->tok_value == S_GREATER && col1_type == T_INT) {
+					condition1_op = S_GREATER;
+					cur = cur->next;
+				}
+				else if (cur->tok_value == S_LESS && col1_type == T_INT) {
+					condition1_op = S_LESS;
+					cur = cur->next;
+				}
+				else if (cur->tok_value == S_EQUAL) {
+					condition1_op = S_EQUAL;
+					cur = cur->next;
+				} 
+				else {
+					printf("Error: Invalid comparison operator\n");
+					rc = INVALID_TYPE;
+					cur->tok_value = INVALID;
+					return rc;
+				}
+
+				// Validate the value type
+				if (condition1_op != S_ISNULL && condition1_op != S_ISNOTNULL) {
+					if (cur->tok_value != INT_LITERAL && cur->tok_value != STRING_LITERAL && cur->tok_value != K_NULL) {
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						printf("Error: Expected int, string, or null\n");
+						return rc;
+					}
+					else if (col1_type == T_INT && cur->tok_value != INT_LITERAL) {
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						printf("Error: Expected int literal\n");
+						return rc;
+					}
+					else if (col1_type == T_CHAR && cur->tok_value != STRING_LITERAL) {
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						printf("Error: Expected string literal\n");
+						return rc;
+					} else {
+						// Save the value
+						if (cur->tok_value == INT_LITERAL) {
+							condition1_val = atoi(cur->tok_string);
+						} else {
+							strcpy(condition1_str, cur->tok_string);
+						}
+						cur = cur->next;
+					}
+				} // Finished validating value1
+			}
+		} // Finished checking first condition
+
+		// Check AND/OR
+		if (cur->tok_value == K_AND) {
+			and_or = K_AND;
+			cur = cur->next;
+		} else if (cur->tok_value == K_OR) {
+			and_or = K_OR;
+			cur = cur->next;
+		} 
+		
+		// Validate second condition
+		if (and_or != -1) {
+			
+			if ((cur->tok_class != keyword) &&
+				(cur->tok_class != identifier) &&
+				(cur->tok_class != type_name)) 
+			{
+				printf("Error: Invalid column name\n");
+				rc = INVALID_COLUMN_NAME;
+				cur->tok_value = INVALID;
+				return rc;
+			}
+			else 
+			{
+				// Check if valid column name in table 1
+				bool foundColumn = false;
+
+				col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);	
+				for (int ci = 0; ci < tab_entry1->num_columns; ci++) {
+					if (strcmp(col_entry1->col_name, cur->tok_string) == 0) {
+						foundColumn = true;
+						col2_type = col_entry1->col_type;
+						col2_ID = col_entry1->col_id;
+						col2_tab = 1; 
+						break;
+					}
+					col_entry1++;
+				}
+
+				// Check if valid column name in table 2
+				if (!foundColumn && natural_join) {
+					col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+					for (int ci = 0; ci < tab_entry2->num_columns; ci++) {
+						if (strcmp(col_entry2->col_name, cur->tok_string) == 0) {
+							foundColumn = true;
+							col2_type = col_entry2->col_type;
+							col2_ID = col_entry2->col_id;
+							col2_tab = 2; 
+							break;
+						}
+						col_entry2++;
+					}
+				}
+				
+				
+
+				if (!foundColumn) {
+					printf("Error: Invalid column name\n");
+					rc = INVALID_COLUMN_NAME;
+					cur->tok_value = INVALID;
+					return rc;
+				} else {
+					// Check comparison operator
+					cur = cur->next;
+					// IS NULL
+					if (cur->tok_value == K_IS && cur->next->tok_value == K_NULL) {
+						condition2_op = S_ISNULL;
+						cur = cur->next->next;
+					}
+					else if (cur->tok_value == K_IS && cur->next->tok_value == K_NOT && cur->next->next->tok_value == K_NULL) {
+						condition2_op = S_ISNOTNULL;
+						cur = cur->next->next->next;
+					}
+					else if (cur->tok_value == S_GREATER && col2_type == T_INT) {
+						condition2_op = S_GREATER;
+						cur = cur->next;
+					}
+					else if (cur->tok_value == S_LESS && col2_type == T_INT) {
+						condition2_op = S_LESS;
+						cur = cur->next;
+					}
+					else if (cur->tok_value == S_EQUAL) {
+						condition2_op = S_EQUAL;
+						cur = cur->next;
+					} 
+					else {
+						printf("Error: Invalid comparison operator\n");
+						rc = INVALID_TYPE;
+						cur->tok_value = INVALID;
+						return rc;
+					}
+
+					// Validate the value type
+					if (condition2_op != S_ISNULL && condition2_op != S_ISNOTNULL) {
+						if (cur->tok_value != INT_LITERAL && cur->tok_value != STRING_LITERAL && cur->tok_value != K_NULL) {
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+							printf("Error: Expected int, string, or null\n");
+							return rc;
+						}
+						else if (col2_type == T_INT && cur->tok_value != INT_LITERAL) {
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+							printf("Error: Expected int literal\n");
+							return rc;
+						}
+						else if (col2_type == T_CHAR && cur->tok_value != STRING_LITERAL) {
+							rc = INVALID_TYPE;
+							cur->tok_value = INVALID;
+							printf("Error: Expected string literal\n");
+							return rc;
+						} else {
+							// Save the value
+							if (cur->tok_value == INT_LITERAL) {
+								condition2_val = atoi(cur->tok_string);
+							} else {
+								strcpy(condition2_str, cur->tok_string);
+								
+							}
+							cur = cur->next;
+						}
+					} // Finished validating value2
+				}
+			} // Finished checking second condition
+		}
+	} // End WHERE
+	// else if () ORDER BY
+
+	printf("select columns: ");
+	for (int i = 0; i < numSelectColumns; i++) {
+		printf("%d ", selectColID[i]);
+	}
+	printf("\n");
+
+	if (natural_join) {
+		printf("natural join ");
+	} else {
+		printf("not natural join ");
+	}
+
+	if (where_clause) {
+		printf("where ");
+		printf("column %d (type %d) from table %d ", col1_ID, col1_type, col1_tab);
+		if (col1_type == T_INT) {
+			printf("value %d ", condition1_val);
+		} else {
+			printf("string %s ", condition1_str);
+		}
+
+		if (and_or > 0) {
+			printf("column %d (type %d) from table %d ", col2_ID, col2_type, col2_tab);
+			if (col2_type == T_INT) {
+				printf("value %d ", condition2_val);
+			} else {
+				printf("string %s ", condition2_str);
+			}
+		}
+	} else {
+		printf("no where ");
+	}
+	printf("\n\n");
+
+	// FINISH PARSING
 
   if (!rc) {
     // Open table1 file for reading
-    int num_rows1 = 0, record_size1 = 0, h_offset1 = 0;
-		int num_rows2 = 0, record_size2 = 0, h_offset2 = 0;
-
+    
     char filename1[MAX_IDENT_LEN + 4] = {0};
     strcpy(filename1, strcat(tab_entry1->table_name, ".tab"));
 
@@ -1314,87 +1703,265 @@ int sem_select_star(token_list *t_list) {
 
     if (!rc) {
       char *header = "-----------------";
-      int num_columns = tab_entry1->num_columns;
     
-      if (!natural_join) { // Print all columns for one table
-        // Print top border
-        for(int i = 0; i < num_columns; i++) {
-          printf("%s", header);
-        }
-        printf("\n");
+      if (!natural_join) { // TABLE 1 COLUMNS
 
-        printf("|");
-
-        // Print column names
-				int i;
-        for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
-								i < num_columns; i++, col_entry1++) 
-        {
-            printf("%-16s|", col_entry1->col_name);
-        }
-        printf("\n");
-
-        // Print bottom border
-        for(int i = 0; i < num_columns; i++) {
-          if(i == (num_columns-1)) {
-            printf("%s\n", header);
-          } else {
-            printf("%s", header);
-          }
-        }
-        
-				int num_records_read = 0;
-
-        // print one row at a time
-        while(num_records_read < num_rows1) {
-					fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move file pointer to start of record
-
-          printf("|");
-          // Read one record
-          col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
-          for (i = 0; i < num_columns; i++) {   
-            char size_byte = fgetc(fp1);
-            if (size_byte == '\0') { // Check if NULL
-              if (col_entry1->col_type == T_INT) {
-                printf("              - |");
-              } else {
-                printf(" -              |");
-              }
-
-              // move fp to next column
-              char *str = (char*)calloc(col_entry1->col_len, 1);
-              fread(str, col_entry1->col_len, 1, fp1);
-              free(str);
-
-            } else { // Not a NULL value
-              if (col_entry1->col_type == T_INT) {
-                int val = 0;
-                fread(&val, sizeof(int), 1, fp1);
-                printf("%15d |", val);
-              } else {
-                char *str = (char*)calloc(col_entry1->col_len, 1);
-                fread(str, col_entry1->col_len, 1, fp1);
-                printf("%-15s |", str);
-                free(str);
-              }
-            }
-            col_entry1++;
-          } 
-          printf("\n");
-					num_records_read += 1;
-        } 
-				// Print bottom border
-				for(int i = 0; i < num_columns; i++) {
-					if(i == (num_columns-1)) {
-						printf("%s\n", header);
-					} else {
+				// PRINT HEADER
+				if (select_star) { // Print all rows
+					// Print top border
+					for(int i = 0; i < tab_entry1->num_columns; i++) {
 						printf("%s", header);
 					}
+					printf("\n");
+					printf("|");
+
+					// Print ALL column names
+					int i;
+					for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+									i < tab_entry1->num_columns; i++, col_entry1++) 
+					{
+							printf("%-16s|", col_entry1->col_name);
+					}
+					printf("\n");
+
+					// Print bottom border
+					for(int i = 0; i < tab_entry1->num_columns; i++) {
+						if(i == (tab_entry1->num_columns-1)) {
+							printf("%s\n", header);
+						} else {
+							printf("%s", header);
+						}
+					}
+
+				} else { // NOT SELECT *
+					// Print top border
+					for(int i = 0; i < numSelectColumns; i++) {
+						printf("%s", header);
+					}
+					printf("\n");
+					printf("|");
+
+					// Print column names
+					col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+					for (int i = 0; i < tab_entry1->num_columns; i++) {
+						for (int j = 0; j < numSelectColumns; j++) {
+							if (selectColID[j] == col_entry1->col_id) {
+								printf("%-16s|", col_entry1->col_name);
+							}
+						}
+						col_entry1++;
+					}
+					printf("\n");
+
+					// Print bottom border
+					for(int i = 0; i < numSelectColumns; i++) {
+						if(i == (numSelectColumns - 1)) {
+							printf("%s\n", header);
+						} else {
+							printf("%s", header);
+						}
+					}
 				}
+
+				// FINISH PRINTING HEADER
+
+				int num_records_read = 0;
+
+				// Print one row at a time
+				while(num_records_read < num_rows1) {
+					fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move file pointer to start of record
+					
+					col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+					bool allConditionsMet = false;
+
+					// Check WHERE clause conditions for table 1
+					if (where_clause) {
+						
+						// Move fp to the conditional column
+						for (int ci = 0; ci < col1_ID; ci++) {
+							fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+							col_entry1++;
+						}
+
+						// Check if condition is met
+						bool condition1Met = false;
+						char size_byte = fgetc(fp1);
+						
+						if (condition1_op == S_ISNULL && size_byte == '\0') {
+							condition1Met = true;
+						} else if (condition1_op == S_ISNOTNULL && size_byte != '\0') {
+							condition1Met= true;
+						} else if (col1_type == T_INT) {
+							int val = 0;
+							fread(&val, sizeof(int), 1, fp1);
+							if (condition1_op == S_EQUAL) {
+								if (val == condition1_val) {
+									condition1Met = true;
+								}
+							} else if (condition1_op == S_GREATER) {
+								if (val > condition1_val) {
+									condition1Met = true;
+								}
+							} else if (condition1_op == S_LESS) {
+								if (val < condition1_val) {
+									condition1Met = true;
+								}
+							}
+						} else if (col1_type == T_CHAR) {
+							char *str = (char*)calloc(col_entry1->col_len, 1);
+							fread(str, col_entry1->col_len, 1, fp1);
+							if (strcmp(str, condition1_str) == 0) {
+								condition1Met = true;
+							}
+							free(str);
+						}
+
+
+						// Check for second condition
+						if (and_or == -1 && condition1Met) {
+							allConditionsMet = true;
+						} else {
+							// Need to check second condition. Reset col_entry1 to beginning of cd_entry
+							fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move file pointer to start of record
+							col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+
+							// Move fp2 to the conditional column
+							for (int ci = 0; ci < col2_ID; ci++) {
+								fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+								col_entry1++;
+							}
+
+							// Check if condition is met
+							bool condition2Met = false;
+							char size_byte = fgetc(fp1);
+
+							if (condition2_op == S_ISNULL && size_byte == '\0') {
+								condition2Met = true;
+							} else if (condition2_op == S_ISNOTNULL && size_byte != '\0') {
+								condition2Met= true;
+							} else if (col2_type == T_INT) {
+								int val = 0;
+								fread(&val, sizeof(int), 1, fp1);
+								if (condition2_op == S_EQUAL) {
+									if (val == condition2_val) {
+										condition2Met = true;
+									}
+								} else if (condition2_op == S_GREATER) {
+									if (val > condition2_val) {
+										condition2Met = true;
+									}
+								} else if (condition2_op == S_LESS) {
+									if (val < condition2_val) {
+										condition2Met = true;
+									}
+								}
+							} else if (col2_type == T_CHAR) {
+								char *str = (char*)calloc(col_entry1->col_len, 1);
+								fread(str, col_entry1->col_len, 1, fp1);
+								if (strcmp(str, condition2_str) == 0) {
+									condition2Met = true;
+								}
+								free(str);
+							}
+
+
+							// check for AND
+							if (and_or == K_AND) {
+								allConditionsMet = (condition1Met && condition2Met);
+							}
+							if (and_or == K_OR) {
+								allConditionsMet = (condition1Met || condition2Met);
+							}
+						}
+					} // Finish checking WHERE conditions
+
+					// All conditions met. Print out
+					if (!where_clause || allConditionsMet) {
+						printf("|");
+						// Reset file pointer to beginning of record
+						fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move fp to next record
+						col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+
+						for (int i = 0; i < tab_entry1->num_columns; i++) {
+
+							bool selectedColumn = false;
+							// Check if this column is a selected column
+							if (!select_star && numSelectColumns > 0) {
+								for (int j = 0; j < numSelectColumns; j++) {
+									if (selectColID[j] == col_entry1->col_id) {
+										selectedColumn = true;
+										break;
+									}
+								}
+							}
+
+							if (select_star || selectedColumn) {
+								char size_byte = fgetc(fp1);
+								if (size_byte == '\0') { // Check if NULL
+									if (col_entry1->col_type == T_INT) {
+										printf("              - |");
+									} else {
+										printf(" -              |");
+									}
+
+									// move fp to next column
+									char *str = (char*)calloc(col_entry1->col_len, 1);
+									fread(str, col_entry1->col_len, 1, fp1);
+									free(str);
+
+								} else { // Not a NULL value
+									if (col_entry1->col_type == T_INT) {
+										int val = 0;
+										fread(&val, sizeof(int), 1, fp1);
+										printf("%15d |", val);
+									} else {
+										char *str = (char*)calloc(col_entry1->col_len, 1);
+										fread(str, col_entry1->col_len, 1, fp1);
+										printf("%-15s |", str);
+										free(str);
+									}
+								}
+							} 
+
+							if (!select_star && !selectedColumn) {
+								// Move fp to next column
+								fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+							}
+								
+							
+							col_entry1++;
+						}
+						printf("\n");
+					}
+
+					
+					num_records_read += 1;
+				} // End while
+
+				// Print bottom border
+				if (select_star) {
+					for(int i = 0; i < tab_entry1->num_columns; i++) {
+						if(i == ((tab_entry1->num_columns) - 1)) {
+							printf("%s\n", header);
+						} else {
+							printf("%s", header);
+						}
+					}
+				} else {
+					for(int i = 0; i < numSelectColumns; i++) {
+						if(i == (numSelectColumns - 1)) {
+							printf("%s\n", header);
+						} else {
+							printf("%s", header);
+						}
+					}
+				}
+			
+				
       }
-      else {
+      else {  // NATURAL JOIN
 				bool hasCommonAttribute = false;
-        // natural join
+
 				char filename2[MAX_IDENT_LEN + 4] = {0};
 				strcpy(filename2, strcat(tab_entry2->table_name, ".tab"));
 
@@ -1402,6 +1969,7 @@ int sem_select_star(token_list *t_list) {
 					printf("Error while opening %s file\n", filename2);
 					rc = FILE_OPEN_ERROR;
 					cur->tok_value = INVALID;
+					return rc;
 				} 
 
 				// Get record size for table2
@@ -1422,13 +1990,9 @@ int sem_select_star(token_list *t_list) {
 					fread(&h_offset2, sizeof(int), 1, fp2);
 				}
 
-				printf("num rows in 2: %d\n", num_rows2);
-
 				// 1. Find join attributes
 				int num_columns1 = tab_entry1->num_columns;
 				int num_columns2 = tab_entry2->num_columns;
-
-				printf("num columns %d\n", num_columns2);
 
 				// change later
 				int c_index = 0;
@@ -1455,51 +2019,86 @@ int sem_select_star(token_list *t_list) {
 					}
         }
 
-				
-
-				
 
 				if (c_index > 0) {
-					// 2. Print out columns
-					// Print top border
-					int num_joined_columns = num_columns1 + num_columns2 - c_index;
-					for(int i = 0; i < num_joined_columns; i++) {
-						printf("%s", header);
-					}
-					printf("\n");
-
-					printf("|");
-
-					// Print column names
-					int i, j;
-					for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
-									i < num_columns1; i++, col_entry1++) 
-					{
-						printf("%-16s|", col_entry1->col_name);
-					}
-					for(i = 0, col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
-									i < num_columns2; i++, col_entry2++) 
-					{
-						bool foundColumn = false;
-						for (j = 0; j < c_index; j++) {
-							if (commonAttributes2[j] == col_entry2->col_id) {
-								foundColumn = true;
-							}
-						}
-						if (!foundColumn) {
-							printf("%-16s|", col_entry2->col_name);
-						}
-					}
-					printf("\n");
-
-					// Print bottom border
-					for(int i = 0; i < num_joined_columns; i++) {
-						if(i == (num_joined_columns-1)) {
-							printf("%s\n", header);
-						} else {
+					// PRINT HEADER
+					int num_joined_columns = 0;
+					if (select_star) {
+						// Print top border
+						num_joined_columns = num_columns1 + num_columns2 - c_index;
+						for(int i = 0; i < num_joined_columns; i++) {
 							printf("%s", header);
 						}
-        	}
+						printf("\n");
+						printf("|");
+
+						// Print ALL column names
+						int i, j;
+						// table 1
+						for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+									i < num_columns1; i++, col_entry1++) 
+						{
+							printf("%-16s|", col_entry1->col_name);
+						}
+						// table 2
+						for(i = 0, col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+									i < num_columns2; i++, col_entry2++) 
+						{
+							bool foundColumn = false;
+							for (j = 0; j < c_index; j++) {
+								if (commonAttributes2[j] == col_entry2->col_id) {
+									foundColumn = true;
+								}
+							}
+							if (!foundColumn) {
+								printf("%-16s|", col_entry2->col_name);
+							}
+						}
+						printf("\n");
+
+						// Print bottom border
+						for(int i = 0; i < num_joined_columns; i++) {
+							if(i == (num_joined_columns-1)) {
+								printf("%s\n", header);
+							} else {
+								printf("%s", header);
+							}
+						}
+        	} else { // NOT SELECT *
+						// Print top border
+						for(int i = 0; i < numSelectColumns; i++) {
+							printf("%s", header);
+						}
+						printf("\n");
+						printf("|");
+
+						// Print column names
+						col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+						col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+						for (int i = 0; i < numSelectColumns; i++) {
+							int tabNum = selectColTable[i];
+							int colId = selectColID[i];
+							if (tabNum == 1) {
+								printf("%-16s|", col_entry1[colId].col_name);
+							} else {
+								printf("%-16s|", col_entry2[colId].col_name);
+							}
+						}
+						printf("\n");
+
+						// Print bottom border
+						for(int i = 0; i < numSelectColumns; i++) {
+							if(i == (numSelectColumns - 1)) {
+								printf("%s\n", header);
+							} else {
+								printf("%s", header);
+							}
+						}
+					}
+
+					// FINISH PRINTING HEADER
+
+					// Print one row at a time
 
 					// Read tuples of S
 					for (int i = 0; i < num_rows1; i++) {
@@ -1518,104 +2117,392 @@ int sem_select_star(token_list *t_list) {
 								cd_entry *col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
 								cd_entry *col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
 
-								// PRINT TABLE 1
+								bool allConditionsMet = false;
 
-								printf("|");
-								// Read one record
-								for (int ri = 0; ri < num_columns1; ri++) {   
-									char size_byte = fgetc(fp1);
-									if (size_byte == '\0') { // Check if NULL
-										if (col_entry1->col_type == T_INT) {
-											printf("              - |");
-										} else {
-											printf(" -              |");
+								// Check WHERE clause conditions for table 1
+								if (where_clause) {
+									
+									bool condition1Met = false;
+
+									if (col1_tab == 1) { // Column in table 1
+										// Move fp to the conditional column
+										for (int ci = 0; ci < col1_ID; ci++) {
+											fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+											col_entry1++;
 										}
 
-										// move fp to next column
-										char *str = (char*)calloc(col_entry1->col_len, 1);
-										fread(str, col_entry1->col_len, 1, fp1);
-										free(str);
+										// Check if condition is met
+										char size_byte = fgetc(fp1);
 
-									} else { // Not a NULL value
-										if (col_entry1->col_type == T_INT) {
+										if (condition1_op == S_ISNULL && size_byte == '\0') {
+											condition1Met = true;
+										} else if (condition1_op == S_ISNOTNULL && size_byte != '\0') {
+											condition1Met= true;
+										} else if (col1_type == T_INT) {
 											int val = 0;
 											fread(&val, sizeof(int), 1, fp1);
-											printf("%15d |", val);
-										} else {
+											// printf("%d and %d\n", val, condition1_val);
+											if (condition1_op == S_EQUAL) {
+												if (val == condition1_val) {
+													condition1Met = true;
+												}
+											} else if (condition1_op == S_GREATER) {
+												if (val > condition1_val) {
+													condition1Met = true;
+												}
+											} else if (condition1_op == S_LESS) {
+												if (val < condition1_val) {
+													condition1Met = true;
+												}
+											}
+										} else if (col1_type == T_CHAR) {
 											char *str = (char*)calloc(col_entry1->col_len, 1);
 											fread(str, col_entry1->col_len, 1, fp1);
-											printf("%-15s |", str);
+											// printf("%s and %s\n", str, condition1_str);
+											if (strcmp(str, condition1_str) == 0) {
+												condition1Met = true;
+											}
 											free(str);
 										}
-									}
-									col_entry1++;
-								} 
+									} else { // Column in table 2
 
-								// PRINT TABLE 2
-								for (int rj = 0; rj < num_columns2; rj++) {   
-									bool foundCommon = false;
-									for (int x = 0; x < c_index; x++) {
-										
-										if (commonAttributes2[x] == col_entry2->col_id) {
-											foundCommon = true;
-											break;
+										// Move fp to the conditional column
+										for (int ci = 0; ci < col1_ID; ci++) {
+											fseek(fp2, 1 + col_entry2->col_len, SEEK_CUR);
+											col_entry2++;
 										}
-									}
 
-									if (!foundCommon) {
+										// Check if condition is met
 										char size_byte = fgetc(fp2);
-										if (size_byte == '\0') { // Check if NULL
-											if (col_entry2->col_type == T_INT) {
-												printf("           NULL |");
-											} else {
-												printf("NULL            |");
-											}
 
-											// move fp to next column
+										if (condition1_op == S_ISNULL && size_byte == '\0') {
+											condition1Met = true;
+										} else if (condition1_op == S_ISNOTNULL && size_byte != '\0') {
+											condition1Met= true;
+										} else if (col1_type == T_INT) {
+											int val = 0;
+											fread(&val, sizeof(int), 1, fp2);
+											// printf("%d and %d\n", val, condition1_val);
+											if (condition1_op == S_EQUAL) {
+												if (val == condition1_val) {
+													condition1Met = true;
+												}
+											} else if (condition1_op == S_GREATER) {
+												if (val > condition1_val) {
+													condition1Met = true;
+												}
+											} else if (condition1_op == S_LESS) {
+												if (val < condition1_val) {
+													condition1Met = true;
+												}
+											}
+										} else if (col1_type == T_CHAR) {
 											char *str = (char*)calloc(col_entry2->col_len, 1);
 											fread(str, col_entry2->col_len, 1, fp2);
+											// printf("%s and %s\n", str, condition1_str);
+											if (strcmp(str, condition1_str) == 0) {
+												condition1Met = true;
+											}
 											free(str);
+										}
+									}
 
-										} else { // Not a NULL value
-											if (col_entry2->col_type == T_INT) {
+									// Check for second condition
+									if (and_or == -1 && condition1Met) {
+										allConditionsMet = true;
+									} else {
+										// Need to check second condition. Reset col_entry1 to beginning of cd_entry
+								
+										bool condition2Met = false;
+
+										if (col2_tab == 1) { // table 1
+
+											fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move file pointer to start of next record
+											col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+											
+											// Move fp to the conditional column
+											for (int ci = 0; ci < col2_ID; ci++) {
+												fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+												col_entry1++;
+											}
+
+											// Check if condition is met
+											char size_byte = fgetc(fp1);
+
+											if (condition2_op == S_ISNULL && size_byte == '\0') {
+												condition2Met = true;
+											} else if (condition2_op == S_ISNOTNULL && size_byte != '\0') {
+												condition2Met= true;
+											} else if (col1_type == T_INT) {
 												int val = 0;
-												fread(&val, sizeof(int), 1, fp2);
-												printf("%15d |", val);
-											} else {
-												char *str = (char*)calloc(col_entry2->col_len, 1);
-												fread(str, col_entry2->col_len, 1, fp2);
-												printf("%-15s |", str);
+												fread(&val, sizeof(int), 1, fp1);
+												// printf("%d and %d\n", val, condition2_val);
+												if (condition2_op == S_EQUAL) {
+													if (val == condition2_val) {
+														condition2Met = true;
+													}
+												} else if (condition2_op == S_GREATER) {
+													if (val > condition2_val) {
+														condition2Met = true;
+													}
+												} else if (condition2_op == S_LESS) {
+													if (val < condition2_val) {
+														condition2Met = true;
+													}
+												}
+											} else if (col2_type == T_CHAR) {
+												char *str = (char*)calloc(col_entry1->col_len, 1);
+												fread(str, col_entry1->col_len, 1, fp1);
+												// printf("%s and %s\n", str, condition2_str);
+												if (strcmp(str, condition2_str) == 0) {
+													condition2Met = true;
+												}
 												free(str);
 											}
-										} 
-									} else {
-										// skip this value
-										char size_byte = fgetc(fp2);
-										char *str = (char*)calloc(col_entry2->col_len, 1);
-										fread(str, col_entry2->col_len, 1, fp2);
-										free(str);
-									}
-										
-									col_entry2++;									
-								} 
-								printf("\n");
+										} else if (col2_tab == 2) { // TABLE 2
 
+											fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move file pointer to start of next record
+											col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+											
+											// Move fp to the conditional column
+											for (int ci = 0; ci < col2_ID; ci++) {
+												fseek(fp2, 1 + col_entry2->col_len, SEEK_CUR);
+												col_entry2++;
+											}
+
+											// Check if condition is met
+											char size_byte = fgetc(fp2);
+
+											if (condition2_op == S_ISNULL && size_byte == '\0') {
+												condition2Met = true;
+											} else if (condition2_op == S_ISNOTNULL && size_byte != '\0') {
+												condition2Met= true;
+											} else if (col2_type == T_INT) {
+												int val = 0;
+												fread(&val, sizeof(int), 1, fp2);
+												// printf("%d and %d\n", val, condition2_val);
+												if (condition2_op == S_EQUAL) {
+													if (val == condition2_val) {
+														condition2Met = true;
+													}
+												} else if (condition2_op == S_GREATER) {
+													if (val > condition2_val) {
+														condition2Met = true;
+													}
+												} else if (condition2_op == S_LESS) {
+													if (val < condition2_val) {
+														condition2Met = true;
+													}
+												}
+											} else if (col2_type == T_CHAR) {
+												char *str = (char*)calloc(col_entry2->col_len, 1);
+												fread(str, col_entry2->col_len, 1, fp2);
+												// printf("%s and %s\n", str, condition2_str);
+												if (strcmp(str, condition2_str) == 0) {
+													condition2Met = true;
+												}
+												free(str);
+											}
+										}
+
+										// check for AND
+										if (and_or == K_AND) {
+											allConditionsMet = (condition1Met && condition2Met);
+										}
+										if (and_or == K_OR) {
+											allConditionsMet = (condition1Met || condition2Met);
+										}
+									}
+								} // Finished checking WHERE conditions
+
+								// printf("all conditions met = %d\n", allConditionsMet);
+
+								if (!where_clause || allConditionsMet) {
+									printf("|");
+
+									// Reset file pointer to beginning of record
+									fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move file pointer to start of next record
+									fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move file pointer to start of next record
+
+									cd_entry *col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+									cd_entry *col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+
+									if (select_star) {
+										// Read one record
+										for (int ri = 0; ri < num_columns1; ri++) {   
+											char size_byte = fgetc(fp1);
+											if (size_byte == '\0') { // Check if NULL
+												if (col_entry1->col_type == T_INT) {
+													printf("              - |");
+												} else {
+													printf(" -              |");
+												}
+
+												// move fp to next column
+												char *str = (char*)calloc(col_entry1->col_len, 1);
+												fread(str, col_entry1->col_len, 1, fp1);
+												free(str);
+
+											} else { // Not a NULL value
+												if (col_entry1->col_type == T_INT) {
+													int val = 0;
+													fread(&val, sizeof(int), 1, fp1);
+													printf("%15d |", val);
+												} else {
+													char *str = (char*)calloc(col_entry1->col_len, 1);
+													fread(str, col_entry1->col_len, 1, fp1);
+													printf("%-15s |", str);
+													free(str);
+												}
+											}
+											col_entry1++;
+										} 
+
+										// PRINT TABLE 2
+										for (int rj = 0; rj < num_columns2; rj++) {   
+											bool foundCommon = false;
+											for (int x = 0; x < c_index; x++) {
+												
+												if (commonAttributes2[x] == col_entry2->col_id) {
+													foundCommon = true;
+													break;
+												}
+											}
+
+											if (!foundCommon) {
+												char size_byte = fgetc(fp2);
+												if (size_byte == '\0') { // Check if NULL
+													if (col_entry2->col_type == T_INT) {
+														printf("           NULL |");
+													} else {
+														printf("NULL            |");
+													}
+
+													// move fp to next column
+													char *str = (char*)calloc(col_entry2->col_len, 1);
+													fread(str, col_entry2->col_len, 1, fp2);
+													free(str);
+
+												} else { // Not a NULL value
+													if (col_entry2->col_type == T_INT) {
+														int val = 0;
+														fread(&val, sizeof(int), 1, fp2);
+														printf("%15d |", val);
+													} else {
+														char *str = (char*)calloc(col_entry2->col_len, 1);
+														fread(str, col_entry2->col_len, 1, fp2);
+														printf("%-15s |", str);
+														free(str);
+													}
+												} 
+											} else {
+												// skip this value
+												char size_byte = fgetc(fp2);
+												char *str = (char*)calloc(col_entry2->col_len, 1);
+												fread(str, col_entry2->col_len, 1, fp2);
+												free(str);
+											}
+												
+											col_entry2++;									
+										} 
+										printf("\n");
+									} else { // NOT SELECT * 
+										// Print column names
+										
+										for (int i = 0; i < numSelectColumns; i++) {
+											fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move file pointer to start of next record
+											fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move file pointer to start of next record
+											col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+											col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+											
+											int tabNum = selectColTable[i];
+											int colId = selectColID[i];
+											
+											if (tabNum == 1) {
+												// Move fp to that column
+												for (int ci = 0; ci < colId; ci++) {
+													fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+													col_entry1++;
+												}
+
+												char size_byte = fgetc(fp1);
+												if (size_byte == '\0') { // Check if NULL
+													if (col_entry1->col_type == T_INT) {
+														printf("              - |");
+													} else {
+														printf(" -              |");
+													}
+												} else { // not a NULL value
+													if (col_entry1->col_type == T_INT) {
+														int val = 0;
+														fread(&val, sizeof(int), 1, fp1);
+														printf("%15d |", val);
+													} else {
+														char *str = (char*)calloc(col_entry1->col_len, 1);
+														fread(str, col_entry1->col_len, 1, fp1);
+														printf("%-15s |", str);
+														free(str);
+													}
+												}
+											} else { // TABLE 2
+												// Move fp to that column
+												for (int ci = 0; ci < colId; ci++) {
+													fseek(fp2, 1 + col_entry2->col_len, SEEK_CUR);
+													col_entry2++;
+												}
+
+												char size_byte = fgetc(fp2);
+												if (size_byte == '\0') { // Check if NULL
+													if (col_entry2->col_type == T_INT) {
+														printf("              - |");
+													} else {
+														printf(" -              |");
+													}
+												} else { // not a NULL value
+													if (col_entry2->col_type == T_INT) {
+														int val = 0;
+														fread(&val, sizeof(int), 1, fp2);
+														printf("%15d |", val);
+													} else {
+														char *str = (char*)calloc(col_entry2->col_len, 1);
+														fread(str, col_entry2->col_len, 1, fp2);
+														printf("%-15s |", str);
+														free(str);
+													}
+												}
+											} 
+										} // End for - select Columns
+										printf("\n");
+									} // Finished printing selected columns
+								}
 							} 
 						}	
-					} // finish iterating through t1 and t2
+					} // Finish iterating through t1 and t2
 
 					// Print bottom border
-					for(int i = 0; i < num_joined_columns; i++) {
-						if(i == (num_joined_columns-1)) {
-							printf("%s\n", header);
-						} else {
-							printf("%s", header);
+					if (select_star) {
+						for(int i = 0; i < num_joined_columns; i++) {
+							if(i == (num_joined_columns-1)) {
+								printf("%s\n", header);
+							} else {
+								printf("%s", header);
+							}
 						}
-        	}
+					} else {
+						for(int i = 0; i < numSelectColumns; i++) {
+							if(i == (numSelectColumns - 1)) {
+								printf("%s\n", header);
+							} else {
+								printf("%s", header);
+							}
+						}
+					}
+					
 				}
-      } // end natural join
+				free(commonAttributes1);
+				free(commonAttributes2);
+      } // End natural join
 
-      
     }
 		fclose(fp1);
 		fclose(fp2);
