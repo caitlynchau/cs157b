@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <limits.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #define strcasecmp _stricmp
@@ -16,6 +17,8 @@
 
 /* global variable declaration */
 int total_rows;
+int *base_int_arr; // for sorting
+char **base_str_arr;
 
 int main(int argc, char** argv)
 {
@@ -1242,11 +1245,25 @@ int sem_select(token_list *t_list) {
 	// select <column> info
 	int *selectColID, *selectColTable;
 
+	// aggregate functions
+	bool sum = false, avg = false, count = false;
+	bool count_star = false;
+	int sum_ = 0, count_ = 0;
+
+	// order by
+	bool order_by = false;
+	bool order_desc = false;
+	int order_colID, order_colTable, order_colType, order_colLen;
+	int *sorted_index;
+
 	
   if ((cur->tok_class != keyword) &&
 		  (cur->tok_class != identifier) &&
 			(cur->tok_class != type_name) &&
-			(cur->tok_value != S_STAR))
+			(cur->tok_value != S_STAR) &&
+			(cur->tok_value != F_AVG) &&
+			(cur->tok_value != F_COUNT) &&
+			(cur->tok_value != F_SUM))
 	{
 		rc = INVALID_TABLE_NAME;
 		cur->tok_value = INVALID;
@@ -1260,51 +1277,87 @@ int sem_select(token_list *t_list) {
       cur = cur->next;
     } else { // Did not find a *
 
-			// Look ahead to find FROM keyword
-			
-			while (cur->tok_value != K_FROM) {
-
-				if (cur->tok_value == EOC) {
+			if (cur->tok_value == F_SUM) {
+				cur = cur->next;
+				if (cur->tok_value != S_LEFT_PAREN && cur->next->next->tok_value != S_RIGHT_PAREN) {
 					rc = INVALID_STATEMENT;
 					cur->tok_value = INVALID;
+					printf("Error: Expected aggregate function in parenthesis");
 					return rc;
+				} else {
+					sum = true;
 				}
+				cur = cur->next->next->next; // move to FROM
+			} else if (cur->tok_value == F_AVG) {
+				cur = cur->next;
+				if (cur->tok_value != S_LEFT_PAREN && cur->next->next->tok_value != S_RIGHT_PAREN) {
+					rc = INVALID_STATEMENT;
+					cur->tok_value = INVALID;
+					printf("Error: Expected aggregate function in parenthesis");
+					return rc;
+				} else {
+					avg = true;
+				}
+				cur = cur->next->next->next; // move to FROM
+			} else if (cur->tok_value == F_COUNT) {
+				cur = cur->next;
+				if (cur->tok_value != S_LEFT_PAREN && cur->next->next->tok_value != S_RIGHT_PAREN) {
+					rc = INVALID_STATEMENT;
+					cur->tok_value = INVALID;
+					printf("Error: Expected aggregate function in parenthesis");
+					return rc;
+				} else {
+					count = true;
+				}
+				cur = cur->next->next->next; // move to FROM
+			} else {
+				// Look ahead to find FROM keyword
+			
+				while (cur->tok_value != K_FROM) {
 
-				else if (cur->tok_value == S_COMMA) {
-					if ((cur->next->tok_class != keyword) 
-					&& (cur->next->tok_class != identifier) 
-					&& (cur->next->tok_class != type_name)) {
+					if (cur->tok_value == EOC) {
+						rc = INVALID_STATEMENT;
+						cur->tok_value = INVALID;
+						return rc;
+					}
+
+					else if (cur->tok_value == S_COMMA) {
+						if ((cur->next->tok_class != keyword) 
+						&& (cur->next->tok_class != identifier) 
+						&& (cur->next->tok_class != type_name)) {
+							rc = INVALID_COLUMN_NAME;
+							cur->tok_value = INVALID;
+							printf("Error: Invalid column name after comma\n");
+							return rc;
+						} else {
+							cur = cur->next;
+						}
+					}
+
+					else if ((cur->tok_class != keyword) 
+						&& (cur->tok_class != identifier) 
+						&& (cur->tok_class != type_name)) {
 						rc = INVALID_COLUMN_NAME;
 						cur->tok_value = INVALID;
-						printf("Error: Invalid column name after comma\n");
+						printf("Error: Invalid column name. Expected keyword, identifier, type name\n");
 						return rc;
-					} else {
+					}
+					else {
+						numSelectColumns++;
 						cur = cur->next;
 					}
-				}
+				} // End while
 
-				else if ((cur->tok_class != keyword) 
-					&& (cur->tok_class != identifier) 
-					&& (cur->tok_class != type_name)) {
-					rc = INVALID_COLUMN_NAME;
+				
+				printf("num columns %d!\n", numSelectColumns);
+				if (cur->tok_value != K_FROM) {
+					rc = INVALID_STATEMENT;
 					cur->tok_value = INVALID;
-					printf("Error: Invalid column name. Expected keyword, identifier, type name\n");
+					printf("Error: Expected FROM clause to select from\n");
 					return rc;
-				}
-				else {
-					numSelectColumns++;
-					cur = cur->next;
-				}
-			} // End while
-
+				} 
+			}
 			
-			printf("num columns %d!\n", numSelectColumns);
-			if (cur->tok_value != K_FROM) {
-				rc = INVALID_STATEMENT;
-				cur->tok_value = INVALID;
-				printf("Error: Expected FROM clause to select from\n");
-				return rc;
-			} 
 		}
 
 		// Should be on FROM now. Check if table exists and check for natural join
@@ -1338,15 +1391,88 @@ int sem_select(token_list *t_list) {
 				}
 			} 
 		}
-		
+
 		// After checking that tables exist, verify that columns are valid in those tables
 
-		if (!rc && !select_star && numSelectColumns > 0) {
+		// Check column for aggregates
+		if (!rc && (avg || sum || count)) {
+			printf("checking the agg column!\n");
+		
+			selectColID = (int*)calloc(1, sizeof(int));
+			selectColTable = (int*)calloc(1, sizeof(int));
+			numSelectColumns = 1;
+
+			token_list *temp = t_list; // Move back to beginnning
+			
+			temp = temp->next->next;; // skip <aggregate>(
+			
+
+			if ((sum || avg) && temp->tok_value == S_STAR) {
+				rc = INVALID_TYPE;
+				temp->tok_value = INVALID;
+				printf("Error: Does not accept *\n");
+				return rc;
+			} else if (count && temp->tok_value == S_STAR) {
+				count_star = true;
+			} else {
+				bool isValid = false;
+				col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+
+				// Check table1's columns
+				for (int i = 0; i < tab_entry1->num_columns; i++, col_entry1++) {
+					if (strcmp(col_entry1->col_name, temp->tok_string) == 0) {
+						// Check the column type 
+						if ((sum || avg) && (col_entry1->col_type != T_INT)) {
+							rc = INVALID_TYPE;
+							temp->tok_value = INVALID;
+							printf("Error: Aggregate function expects valid integer column\n");
+							return rc;
+						} else {
+							selectColID[0] = col_entry1->col_id;
+							selectColTable[0] = 1; // table 1
+							isValid = true;
+							break;
+						}
+					}
+				}
+
+				// Check table2's columns
+				if (natural_join && !isValid) {
+					col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+				
+					for (int i = 0; i < tab_entry2->num_columns; i++, col_entry2++) {
+						if (strcmp(col_entry2->col_name, temp->tok_string) == 0) {
+							if ((sum || avg) && col_entry2->col_type != T_INT) {
+								rc = INVALID_TYPE;
+								temp->tok_value = INVALID;
+								printf("Error: Aggregate function expects valid integer column\n");
+								return rc;
+							} else {
+								isValid = true;
+								selectColID[0] = col_entry2->col_id;
+								selectColTable[0] = 2; // table 2
+								break;
+							}
+						}
+					}
+				}
+
+				if (!isValid) {
+					rc = INVALID_COLUMN_NAME;
+					temp->tok_value = INVALID;
+					printf("Error: Invalid column name\n");
+					return rc;
+				}
+			}
+		}
+
+		else if (!rc && !select_star && numSelectColumns > 0) {
 			selectColID = (int*)calloc(numSelectColumns, sizeof(int));
 			selectColTable = (int*)calloc(numSelectColumns, sizeof(int));
 
 			// Go back to verify columns
 			token_list *temp = t_list; // Move back to beginnning
+
 			
 			for (int ci = 0; ci < numSelectColumns; ci++) {
 
@@ -1371,7 +1497,7 @@ int sem_select(token_list *t_list) {
 						if (strcmp(col_entry2->col_name, temp->tok_string) == 0) {
 							isValid = true;
 							selectColID[ci] = col_entry2->col_id;
-							selectColTable[ci] = 2; // table 1
+							selectColTable[ci] = 2; // table 2
 							break;
 						}
 					}
@@ -1390,10 +1516,12 @@ int sem_select(token_list *t_list) {
 					temp = temp->next->next; // skip columns
 				}
 			} // End for
+			
+			
 		} 
   }
 
-	// Cur is currently on <table name> Check for WHERE keyword
+	
 	cur = cur->next;
 	if (cur->tok_value == K_WHERE) {
 		where_clause = true;
@@ -1633,41 +1761,149 @@ int sem_select(token_list *t_list) {
 			} // Finished checking second condition
 		}
 	} // End WHERE
-	// else if () ORDER BY
 
-	printf("select columns: ");
-	for (int i = 0; i < numSelectColumns; i++) {
-		printf("%d ", selectColID[i]);
-	}
-	printf("\n");
+	// Check for ORDER BY
 
-	if (natural_join) {
-		printf("natural join ");
-	} else {
-		printf("not natural join ");
-	}
-
-	if (where_clause) {
-		printf("where ");
-		printf("column %d (type %d) from table %d ", col1_ID, col1_type, col1_tab);
-		if (col1_type == T_INT) {
-			printf("value %d ", condition1_val);
-		} else {
-			printf("string %s ", condition1_str);
+	if (cur->tok_value == K_ORDER) {
+		cur = cur->next;
+		if (cur->tok_value != K_BY) {
+			rc = INVALID_STATEMENT;
+			cur->tok_value = INVALID;
+			printf("Error: Expected ORDER BY\n");
+			return rc;
 		}
+		else {
+			order_by = true;
+			cur = cur->next;
+			
+			// Check if valid column name in table 1
+			bool foundColumn = false;
 
-		if (and_or > 0) {
-			printf("column %d (type %d) from table %d ", col2_ID, col2_type, col2_tab);
-			if (col2_type == T_INT) {
-				printf("value %d ", condition2_val);
+			col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);	
+			for (int ci = 0; ci < tab_entry1->num_columns; ci++) {
+				if (strcmp(col_entry1->col_name, cur->tok_string) == 0) {
+					foundColumn = true;
+					order_colID = col_entry1->col_id;
+					order_colType = col_entry1->col_type;
+					order_colLen = col_entry1->col_len;
+					order_colTable = 1;
+					break;
+				}
+				col_entry1++;
+			}
+
+			// Check if valid column name in table 2
+			if (!foundColumn && natural_join) {
+				col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+				for (int ci = 0; ci < tab_entry2->num_columns; ci++) {
+					if (strcmp(col_entry2->col_name, cur->tok_string) == 0) {
+						foundColumn = true;
+						order_colID = col_entry2->col_id;
+						order_colType = col_entry2->col_type;
+						order_colLen = col_entry2->col_len;
+						order_colTable = 2;
+						break;
+					}
+					col_entry2++;
+				}
+			}
+
+			if (!foundColumn) {
+				rc = INVALID_COLUMN_NAME;
+				cur->tok_value = INVALID;
+				printf("Error: Invalid column name\n");
+				return rc;
 			} else {
-				printf("string %s ", condition2_str);
+				// Validated column
+				cur = cur->next;
+				if (cur->tok_value == K_DESC) {
+					order_desc = true;
+					cur = cur->next;
+					if (cur->tok_value != EOC) {
+						rc = INVALID_STATEMENT;
+						cur->tok_value = INVALID;
+						printf("Error: Invalid select statement\n");
+						return rc;
+					}
+				} else if (cur->tok_value != EOC) {
+					rc = INVALID_STATEMENT;
+					cur->tok_value = INVALID;
+					printf("Error: Invalid select statement\n");
+					return rc;
+				}
 			}
 		}
-	} else {
-		printf("no where ");
+	} // Finish checking ORDER BY
+	
+	if (cur->tok_value != EOC) {
+		rc = INVALID_STATEMENT;
+		cur->tok_value = INVALID;
+		printf("Error: Invalid select statement\n");
+		return rc;
 	}
-	printf("\n\n");
+
+
+// ///////////////////////////////////////// checking values
+
+// 	printf("#%d select columns: ", numSelectColumns);
+// 	for (int i = 0; i < numSelectColumns; i++) {
+// 		printf("%d ", selectColID[i]);
+// 	}
+// 	printf("\n");
+
+// 	if (avg) {
+// 		printf("avg ");
+// 	}
+
+// 	if (sum) {
+// 		printf("sum ");
+// 	}
+
+// 	if (count) {
+// 		printf("count!!! ");
+// 		if (count_star) printf("star ");
+// 	}
+
+// 	if (natural_join) {
+// 		printf("natural join ");
+// 	} else {
+// 		printf("not natural join ");
+// 	}
+
+// 	if (where_clause) {
+// 		printf("where ");
+// 		printf("column %d (type %d) from table %d ", col1_ID, col1_type, col1_tab);
+// 		if (col1_type == T_INT) {
+// 			printf("value %d ", condition1_val);
+// 		} else {
+// 			printf("string %s ", condition1_str);
+// 		}
+
+// 		if (and_or > 0) {
+// 			printf("column %d (type %d) from table %d ", col2_ID, col2_type, col2_tab);
+// 			if (col2_type == T_INT) {
+// 				printf("value %d ", condition2_val);
+// 			} else {
+// 				printf("string %s ", condition2_str);
+// 			}
+// 		}
+// 	} else {
+// 		printf("no where ");
+// 	}
+
+// 	if (order_by) {
+// 		printf("order by col %d in table %d  ", order_colID, order_colTable);
+// 		if (order_desc) {
+// 			printf("desc ");
+// 		} else {
+// 			printf("asc ");
+// 		}
+// 	} else {
+// 		printf("not ordered");
+// 	}
+// 	printf("\n\n");
+
+// 	/////////////////////////////////////////////////////////////////////////////
 
 	// FINISH PARSING
 
@@ -1707,7 +1943,11 @@ int sem_select(token_list *t_list) {
       if (!natural_join) { // TABLE 1 COLUMNS
 
 				// PRINT HEADER
-				if (select_star) { // Print all rows
+				if (sum || count || avg) {
+					printf("1\n");
+					printf("%s\n", header);
+				}
+				else if (select_star) { // Print all rows
 					// Print top border
 					for(int i = 0; i < tab_entry1->num_columns; i++) {
 						printf("%s", header);
@@ -1765,11 +2005,101 @@ int sem_select(token_list *t_list) {
 
 				// FINISH PRINTING HEADER
 
-				int num_records_read = 0;
+				int *sorted_int;
+				char **sorted_str;
 
-				// Print one row at a time
-				while(num_records_read < num_rows1) {
-					fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move file pointer to start of record
+				// Sort the table based on column
+				if (order_by) {
+
+					if (order_colType == T_INT) {
+						sorted_int = (int*)calloc(num_rows1, sizeof(int));
+					} else {
+						sorted_str = (char**)malloc(num_rows1 * sizeof(char*));
+						for (int i = 0; i < num_rows1; i++) {
+							sorted_str[i] = (char*)malloc((order_colID + 1) * sizeof(char));
+						}
+					}
+
+					// Get all the values and put in array
+					
+					for (int i = 0; i < num_rows1; i++) {
+						fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move file pointer to start of record
+						col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+
+						// Move fp to the column to be sorted
+						for (int ci = 0; ci < order_colID; ci++) {
+							fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+							col_entry1++;
+						}
+
+						// Null values have highest value
+
+						char size_byte = fgetc(fp1);
+
+						// If the value is null, set sorted[i] value to highest int or ascii value
+						if (size_byte == '\0') {
+							if (order_colType == T_INT) {
+								sorted_int[i] = INT_MAX;
+							} else {
+								char *str = (char*)calloc(order_colLen, 1);
+								for (int ri = 0; ri < order_colLen; ri++) {
+									str[ri] = 'z';
+								}
+								strcpy(sorted_str[i], str);
+								free(str);
+							}
+						}
+						// Otherwise, value is not null. Put value i
+						if (order_colType == T_INT) {
+							int val = 0;
+							fread(&val, sizeof(int), 1, fp1);
+							sorted_int[i] = val;
+						} else {
+							char *str = (char*)calloc(col_entry1->col_len, 1);
+							fread(str, col_entry1->col_len, 1, fp1);
+							strcpy(sorted_str[i], str);
+						}
+
+					
+					} // end for
+
+					sorted_index = (int*)calloc(sizeof(int) * num_rows1, 1);
+					
+					// Initialize initial index permutation of 'unmodified' array
+					for (int i = 0; i < num_rows1; i++) {
+						sorted_index[i] = i; // [0, 1, 2, ..., n]
+					}
+
+					// Sort the indexes
+					if (order_colType == T_INT) {
+						base_int_arr = sorted_int;
+						if (!order_desc) {
+							qsort(sorted_index, num_rows1, sizeof(int), compareInt);
+						} else {
+							qsort(sorted_index, num_rows1, sizeof(int), compareIntDesc);
+						}
+						
+						free(sorted_int);
+					} else {
+						base_str_arr = sorted_str;
+						if (!order_desc) {
+							qsort(sorted_index, num_rows1, sizeof(int), compareStr);
+						} else {
+							qsort(sorted_index, num_rows1, sizeof(int), compareStrDesc);
+						}				
+						free(sorted_str);				
+					}
+				}
+
+				// Iterate through each record
+				for (int cur_row = 0; cur_row < num_rows1; cur_row++) {
+					int currentRecordIndex;
+					if (order_by) {
+						currentRecordIndex = sorted_index[cur_row];
+					} else {
+						currentRecordIndex = cur_row;
+					}
+					fseek(fp1, h_offset1 + (currentRecordIndex * record_size1), SEEK_SET); // move file pointer to start of record
 					
 					col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
 					bool allConditionsMet = false;
@@ -1822,7 +2152,7 @@ int sem_select(token_list *t_list) {
 							allConditionsMet = true;
 						} else {
 							// Need to check second condition. Reset col_entry1 to beginning of cd_entry
-							fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move file pointer to start of record
+							fseek(fp1, h_offset1 + (currentRecordIndex * record_size1), SEEK_SET); // move file pointer to start of record
 							col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
 
 							// Move fp2 to the conditional column
@@ -1875,11 +2205,66 @@ int sem_select(token_list *t_list) {
 						}
 					} // Finish checking WHERE conditions
 
+					// CALCULATE SUM (null values are ignored)
+					if ((!where_clause || (where_clause && allConditionsMet)) && (sum || avg)) {
+						
+						fseek(fp1, h_offset1 + (currentRecordIndex * record_size1), SEEK_SET); // move fp to next record
+						col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+						
+						// Move to specified column
+						int col_id = selectColID[0];
+						
+						for (int ci = 0; ci < col_id; ci++) {
+							fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+							col_entry1++;
+						}
+
+						// Check if condition is met
+						char size_byte = fgetc(fp1);
+						if (size_byte != '\0') {
+							int val = 0;
+							fread(&val, sizeof(int), 1, fp1);
+							sum_ += val;
+						}
+
+						if (sum) continue;
+					}
+					
+
+					// CALCULATE COUNT 
+					if ((!where_clause || (where_clause && allConditionsMet)) && (count || avg)) {
+						if (avg) {
+							fseek(fp1, h_offset1 + (currentRecordIndex * record_size1), SEEK_SET); // move fp to next record
+							col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+							
+							
+							// Move to specified column
+							int col_id = selectColID[0];
+							
+							for (int ci = 0; ci < col_id; ci++) {
+								fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+								col_entry1++;
+							}
+
+							// Check if condition is met
+							char size_byte = fgetc(fp1);
+							if (size_byte != '\0') {
+								count_++;
+							}
+						}
+						if (count) {
+							count_++;
+						}
+						
+						continue;
+					} 
+
+
 					// All conditions met. Print out
-					if (!where_clause || allConditionsMet) {
+					else if (!where_clause || allConditionsMet) {
 						printf("|");
 						// Reset file pointer to beginning of record
-						fseek(fp1, h_offset1 + (num_records_read * record_size1), SEEK_SET); // move fp to next record
+						fseek(fp1, h_offset1 + (currentRecordIndex * record_size1), SEEK_SET); // move fp to next record
 						col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
 
 						for (int i = 0; i < tab_entry1->num_columns; i++) {
@@ -1901,7 +2286,7 @@ int sem_select(token_list *t_list) {
 									if (col_entry1->col_type == T_INT) {
 										printf("              - |");
 									} else {
-										printf(" -              |");
+										printf("-               |");
 									}
 
 									// move fp to next column
@@ -1933,31 +2318,38 @@ int sem_select(token_list *t_list) {
 						}
 						printf("\n");
 					}
+				} // End for loop
 
-					
-					num_records_read += 1;
-				} // End while
-
-				// Print bottom border
-				if (select_star) {
-					for(int i = 0; i < tab_entry1->num_columns; i++) {
-						if(i == ((tab_entry1->num_columns) - 1)) {
-							printf("%s\n", header);
-						} else {
-							printf("%s", header);
-						}
+				if (sum || count || avg) {
+					if (sum) {
+						printf("%15d \n", sum_);
+					} else if (count) {
+						printf("%15d \n", count_);
+					} else {
+						float average = sum_ / (float)count_;
+						printf("%15.3f \n", average);
 					}
 				} else {
-					for(int i = 0; i < numSelectColumns; i++) {
-						if(i == (numSelectColumns - 1)) {
-							printf("%s\n", header);
-						} else {
-							printf("%s", header);
+					// Print bottom border
+					if (select_star) {
+						for(int i = 0; i < tab_entry1->num_columns; i++) {
+							if(i == ((tab_entry1->num_columns) - 1)) {
+								printf("%s\n", header);
+							} else {
+								printf("%s", header);
+							}
+						}
+					} else {
+						for(int i = 0; i < numSelectColumns; i++) {
+							if(i == (numSelectColumns - 1)) {
+								printf("%s\n", header);
+							} else {
+								printf("%s", header);
+							}
 						}
 					}
 				}
-			
-				
+
       }
       else {  // NATURAL JOIN
 				bool hasCommonAttribute = false;
@@ -2001,7 +2393,7 @@ int sem_select(token_list *t_list) {
 
 
 				int i, j;
-				int count = 0;
+				
 				for(i = 0, col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
 					i < num_columns1; i++, col_entry1++) 
         {
@@ -2023,7 +2415,12 @@ int sem_select(token_list *t_list) {
 				if (c_index > 0) {
 					// PRINT HEADER
 					int num_joined_columns = 0;
-					if (select_star) {
+
+					if (sum || count || avg) {
+						printf("1\n");
+						printf("%s\n", header);
+					}
+					else if (select_star) {
 						// Print top border
 						num_joined_columns = num_columns1 + num_columns2 - c_index;
 						for(int i = 0; i < num_joined_columns; i++) {
@@ -2317,7 +2714,95 @@ int sem_select(token_list *t_list) {
 
 								// printf("all conditions met = %d\n", allConditionsMet);
 
-								if (!where_clause || allConditionsMet) {
+								// CALCULATE SUM
+								if ((!where_clause || (where_clause && allConditionsMet)) && (sum || avg)) {
+								
+									int table = selectColTable[0];
+									int col_id = selectColID[0];
+
+									if (table == 1) {
+										fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move fp to next record
+										col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+										
+										// Move to specified column
+										for (int ci = 0; ci < col_id; ci++) {
+											fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+											col_entry1++;
+										}
+
+										// Check if condition is met
+										char size_byte = fgetc(fp1);
+										if (size_byte != '\0') {
+											int val = 0;
+											fread(&val, sizeof(int), 1, fp1);
+											sum_ += val;
+										}
+									} else {
+										fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move fp to next record
+										col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+										
+										// Move to specified column
+										for (int ci = 0; ci < col_id; ci++) {
+											fseek(fp2, 1 + col_entry2->col_len, SEEK_CUR);
+											col_entry2++;
+										}
+										// Check if condition is met
+										char size_byte = fgetc(fp2);
+										if (size_byte != '\0') {
+											int val = 0;
+											fread(&val, sizeof(int), 1, fp2);
+											sum_ += val;
+										}
+									}
+									if (sum) continue;
+								}
+								if ((!where_clause || (where_clause && allConditionsMet)) && (count || avg)) {
+									
+									if (avg) {
+										int table = selectColTable[0];
+										int col_id = selectColID[0];
+										if (table == 1) {
+											fseek(fp1, h_offset1 + (i * record_size1), SEEK_SET); // move fp to next record
+											col_entry1 = (cd_entry*)((char*)tab_entry1 + tab_entry1->cd_offset);
+											
+											// Move to specified column
+											for (int ci = 0; ci < col_id; ci++) {
+												fseek(fp1, 1 + col_entry1->col_len, SEEK_CUR);
+												col_entry1++;
+											}
+
+											// Check if condition is met
+											char size_byte = fgetc(fp1);
+											if (size_byte != '\0') {
+												count_++;
+											}
+										} else {
+											fseek(fp2, h_offset2 + (j * record_size2), SEEK_SET); // move fp to next record
+											col_entry2 = (cd_entry*)((char*)tab_entry2 + tab_entry2->cd_offset);
+											
+											// Move to specified column
+											for (int ci = 0; ci < col_id; ci++) {
+												fseek(fp2, 1 + col_entry2->col_len, SEEK_CUR);
+												col_entry2++;
+											}
+											// Check if condition is met
+											char size_byte = fgetc(fp2);
+											if (size_byte != '\0') {
+												count_++;
+											}
+										}
+
+									}
+									if (count) {
+										count_++;
+									}
+
+									continue;
+
+								}
+
+
+								else if (!where_clause || allConditionsMet) {
 									printf("|");
 
 									// Reset file pointer to beginning of record
@@ -2335,7 +2820,7 @@ int sem_select(token_list *t_list) {
 												if (col_entry1->col_type == T_INT) {
 													printf("              - |");
 												} else {
-													printf(" -              |");
+													printf("-               |");
 												}
 
 												// move fp to next column
@@ -2479,21 +2964,33 @@ int sem_select(token_list *t_list) {
 						}	
 					} // Finish iterating through t1 and t2
 
-					// Print bottom border
-					if (select_star) {
-						for(int i = 0; i < num_joined_columns; i++) {
-							if(i == (num_joined_columns-1)) {
-								printf("%s\n", header);
-							} else {
-								printf("%s", header);
-							}
+
+					if (sum || count || avg) {
+						if (sum) {
+							printf("%15d \n", sum_);
+						} else if (count) {
+							printf("%15d \n", count_);
+						} else {
+							float average = sum_ / (float)count_;
+							printf("%15.3f \n", average);
 						}
 					} else {
-						for(int i = 0; i < numSelectColumns; i++) {
-							if(i == (numSelectColumns - 1)) {
-								printf("%s\n", header);
-							} else {
-								printf("%s", header);
+						// Print bottom border
+						if (select_star) {
+							for(int i = 0; i < num_joined_columns; i++) {
+								if(i == (num_joined_columns-1)) {
+									printf("%s\n", header);
+								} else {
+									printf("%s", header);
+								}
+							}
+						} else {
+							for(int i = 0; i < numSelectColumns; i++) {
+								if(i == (numSelectColumns - 1)) {
+									printf("%s\n", header);
+								} else {
+									printf("%s", header);
+								}
 							}
 						}
 					}
@@ -2510,6 +3007,38 @@ int sem_select(token_list *t_list) {
   }
 
   return rc;
+}
+
+int compareInt(const void *a, const void *b) {
+	int aa = *((int*)a), bb = *((int*)b);
+	if (base_int_arr[aa] < base_int_arr[bb]) 
+		return -1;
+	if (base_int_arr[aa] == base_int_arr[bb])
+    return 0;
+  if (base_int_arr[aa] > base_int_arr[bb])
+    return 1;
+}
+
+int compareIntDesc(const void *a, const void *b) {
+	int aa = *((int*)a), bb = *((int*)b);
+	if (base_int_arr[aa] > base_int_arr[bb]) 
+		return -1;
+	if (base_int_arr[aa] == base_int_arr[bb])
+    return 0;
+  if (base_int_arr[aa] < base_int_arr[bb])
+    return 1;
+}
+
+int compareStr(const void *a, const void *b) {
+	int aa = *((int*)a), bb = *((int*)b);
+
+	return strcmp(base_str_arr[aa], base_str_arr[bb]);
+}
+
+int compareStrDesc(const void *a, const void *b) {
+	int aa = *((int*)a), bb = *((int*)b);
+
+	return strcmp(base_str_arr[bb], base_str_arr[aa]);
 }
 
 /*
