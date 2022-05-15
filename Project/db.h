@@ -218,6 +218,10 @@ bool checking_values(
 	int h_offset1,
 	int h_offset2);
 // void dump_buffer(void *buffer, int buffer_size);
+int compareInt(const void *a, const void *b);
+int compareIntDesc(const void *a, const void *b);
+int compareStr(const void *a, const void *b);
+int compareStrDesc(const void *a, const void *b);
 
 /*
 	Keep a global list of tpd - in real life, this will be stored
